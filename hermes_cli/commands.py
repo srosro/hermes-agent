@@ -1411,7 +1411,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform"})
+#   - busy: set-once preference for what a message does mid-run; reached via
+#     /hermes busy on Slack. Demoted at the 50-cap when /busy became
+#     gateway-available — without this entry /busy claims a native slot and
+#     silently clamps /insights (a recurring inspection surface), breaking
+#     Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "busy"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
