@@ -10858,8 +10858,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
-        # queue/interrupt knob.  Flag is persisted to config.yaml so it never
-        # fires again on this install.
+        # queue/interrupt knob. The flag is persisted to the routed profile's
+        # config.yaml so each profile gets its own first-touch hint.
         _busy_hint_pending = False
         try:
             from agent.onboarding import (
