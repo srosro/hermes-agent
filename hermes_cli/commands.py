@@ -680,22 +680,6 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
-def busy_command_invocation(context: object = None) -> str:
-    """Return the usable busy-command spelling for a message source."""
-    source = getattr(context, "source", context)
-    platform = getattr(source, "platform", source)
-    if getattr(platform, "value", platform) != "slack":
-        return "/busy"
-
-    thread_id = getattr(source, "thread_id", None)
-    message_id = getattr(context, "message_id", None) or getattr(
-        source, "message_id", None
-    )
-    if thread_id and (not message_id or str(thread_id) != str(message_id)):
-        return "!busy"
-    return "/hermes busy"
-
-
 def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     """Yield (name, description, args_hint) tuples for all plugin slash commands.
 

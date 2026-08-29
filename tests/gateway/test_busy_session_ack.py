@@ -415,7 +415,7 @@ class TestBusySessionOnboardingHint:
         [
             (Platform.TELEGRAM, None, "msg", "/busy", True),
             (Platform.SLACK, None, "msg", "/hermes busy", True),
-            (Platform.SLACK, "msg", "msg", "/hermes busy", True),
+            (Platform.SLACK, "msg", "msg", "!busy", True),
             (Platform.SLACK, "parent", "reply", "!busy", True),
             (Platform.SLACK, None, "msg", "/hermes busy", False),
         ],

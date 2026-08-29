@@ -1081,22 +1081,27 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
-def _telegramize_command_mentions(text: str, context: Any) -> str:
+def _busy_command_invocation(event: "MessageEvent") -> str:
+    """Return the busy spelling usable where this gateway reply will land."""
+    platform = getattr(event.source.platform, "value", event.source.platform)
+    if platform != "slack":
+        return "/busy"
+    return "!busy" if event.source.thread_id else "/hermes busy"
+
+
+def _telegramize_command_mentions(text: str, event: "MessageEvent") -> str:
     """Rewrite command mentions for Telegram and Slack constraints.
 
     Telegram Bot API command names allow only lowercase letters, digits, and
     underscores. Slack blocks native slash commands in threads and does not
     register /busy outside threads, so render its usable spelling there too.
     """
-    source = getattr(context, "source", context)
-    platform = getattr(source, "platform", source)
+    platform = event.source.platform
     platform_value = getattr(platform, "value", platform)
     if platform_value == "slack":
-        from hermes_cli.commands import busy_command_invocation
-
         return re.sub(
             r"(?<![\w:/])/busy\b",
-            busy_command_invocation(context),
+            _busy_command_invocation(event),
             text,
         )
     if platform_value != "telegram":
@@ -10848,8 +10853,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 busy_input_hint_gateway,
                 is_seen,
             )
-            from hermes_cli.commands import busy_command_invocation
-
             _user_cfg = _load_gateway_config()
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
@@ -10860,7 +10863,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
-                _busy_invocation = busy_command_invocation(event)
+                _busy_invocation = _busy_command_invocation(event)
                 message = (
                     f"{message}\n\n"
                     f"{busy_input_hint_gateway(_hint_mode, _busy_invocation)}"

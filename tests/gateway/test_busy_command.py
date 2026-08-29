@@ -69,7 +69,7 @@ class TestBusyCommand:
         ("thread_id", "message_id", "invocation"),
         [
             (None, "msg", "/hermes busy"),
-            ("msg", "msg", "/hermes busy"),
+            ("msg", "msg", "!busy"),
             ("parent", "reply", "!busy"),
         ],
     )

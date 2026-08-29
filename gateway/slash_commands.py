@@ -4173,10 +4173,10 @@ class GatewaySlashCommandsMixin:
             /busy steer         Inject messages mid-run without interrupting
             /busy interrupt     Interrupt the current run (default)
         """
-        from hermes_cli.commands import busy_command_invocation
+        from gateway.run import _busy_command_invocation
 
         arg = event.get_command_args().strip().lower()
-        invocation = busy_command_invocation(event)
+        invocation = _busy_command_invocation(event)
         if not arg or arg == "status":
             # Report the mode actually in effect for this source: with
             # multiplex profiles a routed profile's startup snapshot can
