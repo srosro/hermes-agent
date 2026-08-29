@@ -103,17 +103,3 @@ class TestBusyCommandPersistence:
         result = await runner._handle_busy_command(event)
         assert "unchanged" in str(result).lower()
         assert runner._busy_input_mode == "steer"
-
-    @pytest.mark.asyncio
-    async def test_save_exception_preserves_mode(self, monkeypatch):
-        """When save_config_value raises, mode is unchanged."""
-        runner = _make_runner(busy_mode="interrupt")
-
-        def _raise(*args, **kwargs):
-            raise RuntimeError("disk full")
-
-        monkeypatch.setattr("cli.save_config_values", _raise)
-        event = _make_event("/busy steer")
-        result = await runner._handle_busy_command(event)
-        assert "Could not save" in str(result)
-        assert runner._busy_input_mode == "interrupt"

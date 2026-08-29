@@ -13960,6 +13960,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "busy":
+        from hermes_cli import managed_scope
         from hermes_cli.config import busy_mode_config_values
 
         raw = str(value or "").strip().lower()
@@ -13967,7 +13968,14 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
         if raw not in {"queue", "steer", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
-        _write_config_keys(busy_mode_config_values(raw))
+        updates = busy_mode_config_values(raw)
+        if any(managed_scope.is_key_managed(path) for path in updates):
+            return _err(
+                rid,
+                4002,
+                "Busy input mode is managed by your administrator and cannot be changed.",
+            )
+        _write_config_keys(updates)
         return _ok(rid, {"key": key, "value": raw})
 
     if key == "verbose":
