@@ -14,6 +14,9 @@ def _make_runner(busy_mode="interrupt"):
     runner.session_store = None
     runner.config = None
     runner._busy_input_mode = busy_mode
+    runner._busy_text_mode = "queue" if busy_mode == "queue" else "interrupt"
+    runner.adapters = {}
+    runner._profile_adapters = {}
     return runner
 
 
@@ -32,20 +35,18 @@ class TestBusyCommand:
     """Test /busy command dispatch without config persistence."""
 
     @pytest.mark.asyncio
-    async def test_status_returns_current_mode(self):
-        """/busy status shows the current busy mode."""
-        runner = _make_runner(busy_mode="queue")
-        event = _make_event("/busy status")
+    @pytest.mark.parametrize(
+        ("text", "initial"),
+        [("/busy", "steer"), ("/busy status", "queue")],
+    )
+    async def test_status_returns_current_mode(self, text, initial):
+        """Bare /busy and /busy status show the current busy mode."""
+        runner = _make_runner(busy_mode=initial)
+        event = _make_event(text)
         result = await runner._handle_busy_command(event)
-        assert "queue" in str(result).lower()
-
-    @pytest.mark.asyncio
-    async def test_bare_busy_shows_status(self):
-        """/busy without arguments shows status."""
-        runner = _make_runner(busy_mode="steer")
-        event = _make_event("/busy")
-        result = await runner._handle_busy_command(event)
-        assert "steer" in str(result).lower()
+        reply_text = str(result).lower()
+        assert initial in reply_text
+        assert "busy" in reply_text
 
     @pytest.mark.asyncio
     async def test_busy_invalid_arg(self):
@@ -55,54 +56,39 @@ class TestBusyCommand:
         result = await runner._handle_busy_command(event)
         assert "unknown" in str(result).lower()
 
-    @pytest.mark.asyncio
-    async def test_busy_toggle_messages(self):
-        """Status response includes the mode and behavior."""
-        runner = _make_runner(busy_mode="queue")
-        event = _make_event("/busy status")
-        result = await runner._handle_busy_command(event)
-        reply_text = str(result)
-        assert "queue" in reply_text.lower()
-        assert "busy" in reply_text.lower()
-
-
 class TestBusyCommandPersistence:
     """Test /busy persistence with mocked save_config_value."""
 
     @pytest.mark.asyncio
-    async def test_set_queue_persists(self, monkeypatch):
-        """/busy queue saves config and updates mode."""
+    @pytest.mark.parametrize("mode", ["queue", "steer", "interrupt"])
+    async def test_set_mode_persists(self, monkeypatch, mode):
+        """Each supported mode is saved and applied immediately."""
+        runner = _make_runner(busy_mode="interrupt" if mode != "interrupt" else "queue")
+        monkeypatch.setattr(
+            "cli.save_config_value", lambda k, v: True
+        )
+        event = _make_event(f"/busy {mode}")
+        result = await runner._handle_busy_command(event)
+        assert mode in str(result).lower()
+        assert runner._busy_input_mode == mode
+        assert runner._busy_text_mode == ("queue" if mode == "queue" else "interrupt")
+
+    @pytest.mark.asyncio
+    async def test_managed_mode_is_not_written(self, monkeypatch):
+        """A managed busy mode is rejected before persistence."""
         runner = _make_runner(busy_mode="interrupt")
+        saved = []
         monkeypatch.setattr(
-            "cli.save_config_value", lambda k, v: True
+            "hermes_cli.managed_scope.is_key_managed", lambda _key: True
         )
-        event = _make_event("/busy queue")
-        result = await runner._handle_busy_command(event)
-        assert "queue" in str(result).lower()
-        assert runner._busy_input_mode == "queue"
+        monkeypatch.setattr(
+            "cli.save_config_value", lambda key, value: saved.append((key, value))
+        )
 
-    @pytest.mark.asyncio
-    async def test_set_steer_persists(self, monkeypatch):
-        """/busy steer saves config and updates mode."""
-        runner = _make_runner(busy_mode="queue")
-        monkeypatch.setattr(
-            "cli.save_config_value", lambda k, v: True
-        )
-        event = _make_event("/busy steer")
-        result = await runner._handle_busy_command(event)
-        assert "steer" in str(result).lower()
-        assert runner._busy_input_mode == "steer"
+        result = await runner._handle_busy_command(_make_event("/busy queue"))
 
-    @pytest.mark.asyncio
-    async def test_set_interrupt_persists(self, monkeypatch):
-        """/busy interrupt saves config and updates mode."""
-        runner = _make_runner(busy_mode="queue")
-        monkeypatch.setattr(
-            "cli.save_config_value", lambda k, v: True
-        )
-        event = _make_event("/busy interrupt")
-        result = await runner._handle_busy_command(event)
-        assert "interrupt" in str(result).lower()
+        assert "administrator" in str(result).lower()
+        assert saved == []
         assert runner._busy_input_mode == "interrupt"
 
     @pytest.mark.asyncio

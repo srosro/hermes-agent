@@ -194,8 +194,11 @@ async def test_busy_status_dispatches_through_active_session_path(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_busy_change_updates_only_routed_profile(tmp_path, monkeypatch):
-    """A routed /busy change persists and refreshes only that profile."""
+@pytest.mark.parametrize("adapter_kind", ["primary", "secondary"])
+async def test_active_adapter_busy_change_updates_only_routed_profile(
+    tmp_path, monkeypatch, adapter_kind
+):
+    """Active primary and secondary adapters persist /busy in the routed profile."""
     default_home = tmp_path / "default"
     default_home.mkdir()
     default_config = default_home / "config.yaml"
@@ -207,18 +210,33 @@ async def test_busy_change_updates_only_routed_profile(tmp_path, monkeypatch):
 
     runner = _runner(default_mode="interrupt")
     profile_home = tmp_path / "research"
-    adapter = await _load_profile_snapshot(runner, profile_home, "queue")
-    event = _event(profile="research")
-    event.text = "/busy steer"
     monkeypatch.setattr(
         "hermes_cli.profiles.get_profile_dir",
         lambda _profile_name: profile_home,
     )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists",
+        lambda _profile_name: True,
+    )
+    if adapter_kind == "secondary":
+        adapter = await _load_profile_snapshot(runner, profile_home, "queue")
+    else:
+        profile_home.mkdir()
+        profile_home.joinpath("config.yaml").write_text(
+            "display:\n  busy_input_mode: queue\n",
+            encoding="utf-8",
+        )
+        adapter = _adapter()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        adapter.set_message_handler(runner._make_default_profile_message_handler())
+    event = _event(profile="research")
+    event.text = "/busy steer"
     runner._handle_message = runner._handle_busy_command
+    session_key = build_session_key(event.source, profile="research")
+    adapter._active_sessions[session_key] = asyncio.Event()
 
-    response = await runner._make_profile_message_handler("research")(event)
+    await adapter.handle_message(event)
 
-    assert "steer" in str(response).lower()
     assert "busy_input_mode: steer" in profile_home.joinpath(
         "config.yaml"
     ).read_text(encoding="utf-8")
