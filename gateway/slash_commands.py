@@ -1723,10 +1723,7 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.slash_exec import CommandContext, execute_command
 
         reply = execute_command("help", CommandContext(surface="gateway"))
-        return _telegramize_command_mentions(
-            reply.text,
-            getattr(getattr(event, "source", None), "platform", None),
-        )
+        return _telegramize_command_mentions(reply.text, event)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -1743,10 +1740,7 @@ class GatewaySlashCommandsMixin:
                 options={"page_size": page_size},
             ),
         )
-        return _telegramize_command_mentions(
-            reply.text,
-            getattr(getattr(event, "source", None), "platform", None),
-        )
+        return _telegramize_command_mentions(reply.text, event)
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
@@ -4179,12 +4173,10 @@ class GatewaySlashCommandsMixin:
             /busy steer         Inject messages mid-run without interrupting
             /busy interrupt     Interrupt the current run (default)
         """
+        from hermes_cli.commands import busy_command_invocation
+
         arg = event.get_command_args().strip().lower()
-        invocation = (
-            "/hermes busy"
-            if event.source.platform == Platform.SLACK
-            else "/busy"
-        )
+        invocation = busy_command_invocation(event)
         if not arg or arg == "status":
             # Report the mode actually in effect for this source: with
             # multiplex profiles a routed profile's startup snapshot can

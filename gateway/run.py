@@ -1081,14 +1081,24 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
-def _telegramize_command_mentions(text: str, platform: Any) -> str:
-    """Rewrite slash-command mentions to Telegram-valid command names.
+def _telegramize_command_mentions(text: str, context: Any) -> str:
+    """Rewrite command mentions for Telegram and Slack constraints.
 
     Telegram Bot API command names allow only lowercase letters, digits, and
-    underscores.  Keep other platform renderings unchanged, but normalize
-    Telegram help text so command mentions remain clickable/valid there.
+    underscores. Slack blocks native slash commands in threads and does not
+    register /busy outside threads, so render its usable spelling there too.
     """
+    source = getattr(context, "source", context)
+    platform = getattr(source, "platform", source)
     platform_value = getattr(platform, "value", platform)
+    if platform_value == "slack":
+        from hermes_cli.commands import busy_command_invocation
+
+        return re.sub(
+            r"(?<![\w:/])/busy\b",
+            busy_command_invocation(context),
+            text,
+        )
     if platform_value != "telegram":
         return text
 
@@ -10831,13 +10841,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # while the agent is busy, append a one-time hint explaining the
         # queue/interrupt knob.  Flag is persisted to config.yaml so it never
         # fires again on this install.
+        _busy_hint_pending = False
         try:
             from agent.onboarding import (
                 BUSY_INPUT_FLAG,
                 busy_input_hint_gateway,
                 is_seen,
-                mark_seen,
             )
+            from hermes_cli.commands import busy_command_invocation
+
             _user_cfg = _load_gateway_config()
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
@@ -10848,23 +10860,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
-                _busy_invocation = (
-                    "/hermes busy"
-                    if event.source.platform == Platform.SLACK
-                    else "/busy"
-                )
+                _busy_invocation = busy_command_invocation(event)
                 message = (
                     f"{message}\n\n"
                     f"{busy_input_hint_gateway(_hint_mode, _busy_invocation)}"
                 )
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                _busy_hint_pending = True
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
         try:
-            await adapter._send_with_retry(
+            send_result = await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=(
@@ -10876,6 +10884,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 metadata=thread_meta,
             )
+            if _busy_hint_pending and send_result.success:
+                from agent.onboarding import BUSY_INPUT_FLAG, mark_seen
+
+                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 

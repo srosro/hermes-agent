@@ -28,6 +28,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     Platform,
+    SendResult,
     SessionSource,
     build_session_key,
 )
@@ -82,7 +83,9 @@ def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
     adapter._pending_messages = {}
-    adapter._send_with_retry = AsyncMock()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="ack")
+    )
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)
@@ -408,11 +411,24 @@ class TestBusySessionOnboardingHint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("platform", "invocation"),
-        [(Platform.TELEGRAM, "/busy"), (Platform.SLACK, "/hermes busy")],
+        ("platform", "thread_id", "message_id", "invocation", "send_success"),
+        [
+            (Platform.TELEGRAM, None, "msg", "/busy", True),
+            (Platform.SLACK, None, "msg", "/hermes busy", True),
+            (Platform.SLACK, "msg", "msg", "/hermes busy", True),
+            (Platform.SLACK, "parent", "reply", "!busy", True),
+            (Platform.SLACK, None, "msg", "/hermes busy", False),
+        ],
     )
     async def test_first_busy_ack_appends_platform_hint(
-        self, tmp_path, monkeypatch, platform, invocation
+        self,
+        tmp_path,
+        monkeypatch,
+        platform,
+        thread_id,
+        message_id,
+        invocation,
+        send_success,
     ):
         """First busy-while-running message gets an extra hint about /busy."""
         import gateway.run as _gr
@@ -425,9 +441,16 @@ class TestBusySessionOnboardingHint:
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
+        adapter._send_with_retry.return_value = SendResult(
+            success=send_success,
+            message_id="ack" if send_success else None,
+            error=None if send_success else "delivery failed",
+        )
 
         event = _make_event(text="ping")
         event.source.platform = platform
+        event.source.thread_id = thread_id
+        event.message_id = message_id
         sk = build_session_key(event.source)
 
         agent = MagicMock()
@@ -453,10 +476,14 @@ class TestBusySessionOnboardingHint:
         if platform == Platform.SLACK:
             assert "`/busy " not in content
 
-        # The flag is now persisted to tmp_path/config.yaml
-        import yaml
-        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
-        assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
+        cfg_path = tmp_path / "config.yaml"
+        if send_success:
+            import yaml
+
+            cfg = yaml.safe_load(cfg_path.read_text())
+            assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
+        else:
+            assert not cfg_path.exists()
 
 
 class TestLongRunningNotificationOwnership:
@@ -478,4 +505,3 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-

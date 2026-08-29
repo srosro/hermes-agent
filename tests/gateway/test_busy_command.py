@@ -24,6 +24,8 @@ def _make_event(
     text: str,
     chat_id: str = "chat-test",
     platform: Platform = Platform.TELEGRAM,
+    thread_id: str | None = None,
+    message_id: str | None = None,
 ) -> MessageEvent:
     source = SessionSource(
         platform=platform,
@@ -31,8 +33,9 @@ def _make_event(
         chat_id=chat_id,
         user_name="tester",
         chat_type="dm",
+        thread_id=thread_id,
     )
-    return MessageEvent(text=text, source=source)
+    return MessageEvent(text=text, source=source, message_id=message_id)
 
 
 class TestBusyCommand:
@@ -62,14 +65,44 @@ class TestBusyCommand:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("text", ["/busy status", "/busy bananas"])
-    async def test_slack_replies_use_registered_invocation(self, text):
+    @pytest.mark.parametrize(
+        ("thread_id", "message_id", "invocation"),
+        [
+            (None, "msg", "/hermes busy"),
+            ("msg", "msg", "/hermes busy"),
+            ("parent", "reply", "!busy"),
+        ],
+    )
+    async def test_slack_replies_use_registered_invocation(
+        self, text, thread_id, message_id, invocation
+    ):
         runner = _make_runner()
-        event = _make_event(text, platform=Platform.SLACK)
+        event = _make_event(
+            text,
+            platform=Platform.SLACK,
+            thread_id=thread_id,
+            message_id=message_id,
+        )
 
         result = await runner._handle_busy_command(event)
 
-        assert "/hermes busy" in str(result)
+        assert invocation in str(result)
         assert "`/busy " not in str(result)
+
+    @pytest.mark.asyncio
+    async def test_slack_thread_help_uses_thread_safe_busy_invocation(self):
+        runner = _make_runner()
+        event = _make_event(
+            "/help",
+            platform=Platform.SLACK,
+            thread_id="parent",
+            message_id="reply",
+        )
+
+        result = await runner._handle_help_command(event)
+
+        assert "`!busy" in result
+        assert "`/busy " not in result
 
 class TestBusyCommandPersistence:
     """Test /busy persistence with mocked save_config_value."""
