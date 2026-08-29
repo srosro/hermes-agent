@@ -4181,7 +4181,10 @@ class GatewaySlashCommandsMixin:
         """
         arg = event.get_command_args().strip().lower()
         if not arg or arg == "status":
-            mode = self._busy_input_mode
+            # Report the mode actually in effect for this source: with
+            # multiplex profiles a routed profile's startup snapshot can
+            # override the global default.
+            mode = self._effective_busy_input_mode(event.source)
             if mode == "queue":
                 behavior = "queues for next turn"
             elif mode == "steer":
