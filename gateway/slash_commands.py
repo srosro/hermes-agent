@@ -4206,7 +4206,22 @@ class GatewaySlashCommandsMixin:
         try:
             from cli import save_config_value
             if save_config_value("display.busy_input_mode", arg):
-                self._busy_input_mode = arg
+                profile_name = self._busy_profile_name_for_source(event.source)
+                if profile_name:
+                    from gateway.run import _load_gateway_runtime_config
+
+                    self._snapshot_profile_busy_modes(
+                        profile_name,
+                        _load_gateway_runtime_config(),
+                    )
+                else:
+                    self._busy_input_mode = arg
+
+                adapter = self._adapter_for_source(event.source)
+                if adapter is not None:
+                    adapter._busy_text_mode = self._effective_busy_text_mode(
+                        event.source
+                    )
                 if arg == "queue":
                     behavior = "Messages will be queued for the next turn while Hermes is busy."
                 elif arg == "steer":
