@@ -91,7 +91,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 | `/approvals [manual\|smart\|off]` | Show or set the persistent dangerous-command approval mode. |
 | `/footer [on\|off\|status]` | Toggle the gateway runtime-metadata footer on final replies (shows model, context %, and cwd). |
-| `/busy [queue\|steer\|interrupt\|status]` | Control how messages behave while Hermes is working — queue the new message, steer mid-turn, or interrupt immediately. Available in the CLI and messaging gateway. |
+| `/busy [queue\|steer\|interrupt\|status]` | Control how messages behave while Hermes is working — queue the new message, steer mid-turn, or interrupt immediately. Available in the CLI and messaging gateway. On Slack, use `/hermes busy …`. |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | CLI-only: pick the TUI busy-indicator style. |
 | `/timestamps [on\|off\|status]` | CLI-only: toggle `[HH:MM]` timestamps on messages and in `/history`. |
 | `/wake [on\|off\|status]` | CLI-only: toggle the "Hey Hermes" wake word listener. |
@@ -253,6 +253,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/user-guide/messaging/#background-sessions). |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn without interrupting the current one. |
 | `/steer <prompt>` | Inject a message after the next tool call without interrupting — the model picks it up on its next iteration rather than as a new turn. |
+| `/busy [queue\|steer\|interrupt\|status]` | Control how new messages behave while Hermes is working. On Slack, use `/hermes busy …`. |
 | `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/user-guide/features/goals). |
 | `/subgoal <text>` | Append criteria to the active `/goal` mid-loop (`/subgoal`, `/subgoal remove <N>`, `/subgoal clear`). |
 | `/heartbeat every <interval> <prompt>` (alias: `/hb`) | Set a recurring prompt that re-enters this session when idle. Subcommands: `status`, `pause`, `resume`, `clear`. On Slack use `/hermes heartbeat …`. |
