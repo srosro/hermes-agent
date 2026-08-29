@@ -38,6 +38,8 @@ def _runner(*, default_mode: str = "interrupt") -> GatewayRunner:
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._busy_input_mode = default_mode
     runner._busy_text_mode = "queue" if default_mode == "queue" else "interrupt"
+    runner._busy_input_modes_by_profile = {}
+    runner._busy_text_modes_by_profile = {}
     runner._profile_adapters = {}
     runner.adapters = {}
     runner._sessions = {}
@@ -245,6 +247,35 @@ async def test_active_adapter_busy_change_updates_only_routed_profile(
     )
     assert runner._busy_input_mode == "interrupt"
     assert runner._effective_busy_input_mode(event.source) == "steer"
+    assert adapter._busy_text_mode == "interrupt"
+
+
+@pytest.mark.asyncio
+async def test_busy_change_replaces_explicit_legacy_text_override(
+    tmp_path, monkeypatch
+):
+    """A saved mode remains effective when legacy busy_text_mode was explicit."""
+    profile_home = tmp_path / "research"
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda _profile_name: profile_home,
+    )
+    runner = _runner(default_mode="interrupt")
+    adapter = await _load_profile_snapshot(
+        runner,
+        profile_home,
+        "queue",
+        legacy_text_mode="queue",
+    )
+    event = _event(profile="research")
+    event.text = "/busy interrupt"
+
+    await runner._make_profile_message_handler("research")(event)
+
+    saved = profile_home.joinpath("config.yaml").read_text(encoding="utf-8")
+    assert "busy_input_mode: interrupt" in saved
+    assert "busy_text_mode: interrupt" in saved
+    assert runner._effective_busy_text_mode(event.source) == "interrupt"
     assert adapter._busy_text_mode == "interrupt"
 
 

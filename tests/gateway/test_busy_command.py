@@ -64,9 +64,7 @@ class TestBusyCommandPersistence:
     async def test_set_mode_persists(self, monkeypatch, mode):
         """Each supported mode is saved and applied immediately."""
         runner = _make_runner(busy_mode="interrupt" if mode != "interrupt" else "queue")
-        monkeypatch.setattr(
-            "cli.save_config_value", lambda k, v: True
-        )
+        monkeypatch.setattr("cli.save_config_values", lambda values: True)
         event = _make_event(f"/busy {mode}")
         result = await runner._handle_busy_command(event)
         assert mode in str(result).lower()
@@ -74,15 +72,20 @@ class TestBusyCommandPersistence:
         assert runner._busy_text_mode == ("queue" if mode == "queue" else "interrupt")
 
     @pytest.mark.asyncio
-    async def test_managed_mode_is_not_written(self, monkeypatch):
-        """A managed busy mode is rejected before persistence."""
+    @pytest.mark.parametrize(
+        "managed_key",
+        ["display.busy_input_mode", "display.busy_text_mode"],
+    )
+    async def test_managed_mode_is_not_written(self, monkeypatch, managed_key):
+        """A managed input or compatibility key blocks persistence."""
         runner = _make_runner(busy_mode="interrupt")
         saved = []
         monkeypatch.setattr(
-            "hermes_cli.managed_scope.is_key_managed", lambda _key: True
+            "hermes_cli.managed_scope.is_key_managed",
+            lambda key: key == managed_key,
         )
         monkeypatch.setattr(
-            "cli.save_config_value", lambda key, value: saved.append((key, value))
+            "cli.save_config_values", lambda values: saved.append(values)
         )
 
         result = await runner._handle_busy_command(_make_event("/busy queue"))
@@ -95,9 +98,7 @@ class TestBusyCommandPersistence:
     async def test_save_failure_preserves_mode(self, monkeypatch):
         """When save_config_value returns False, mode is unchanged."""
         runner = _make_runner(busy_mode="steer")
-        monkeypatch.setattr(
-            "cli.save_config_value", lambda k, v: False
-        )
+        monkeypatch.setattr("cli.save_config_values", lambda values: False)
         event = _make_event("/busy queue")
         result = await runner._handle_busy_command(event)
         assert "unchanged" in str(result).lower()
@@ -111,9 +112,7 @@ class TestBusyCommandPersistence:
         def _raise(*args, **kwargs):
             raise RuntimeError("disk full")
 
-        monkeypatch.setattr(
-            "cli.save_config_value", _raise
-        )
+        monkeypatch.setattr("cli.save_config_values", _raise)
         event = _make_event("/busy steer")
         result = await runner._handle_busy_command(event)
         assert "Could not save" in str(result)

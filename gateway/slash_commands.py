@@ -4204,15 +4204,23 @@ class GatewaySlashCommandsMixin:
 
         # Persist before mutate
         try:
-            from cli import save_config_value
+            from cli import save_config_values
             from hermes_cli import managed_scope
 
-            if managed_scope.is_key_managed("display.busy_input_mode"):
+            busy_keys = (
+                "display.busy_input_mode",
+                "display.busy_text_mode",
+            )
+            if any(managed_scope.is_key_managed(key) for key in busy_keys):
                 return EphemeralReply(
                     "Busy input mode is managed by your administrator and "
                     "cannot be changed here."
                 )
-            if save_config_value("display.busy_input_mode", arg):
+            text_mode = "queue" if arg == "queue" else "interrupt"
+            if save_config_values({
+                "display.busy_input_mode": arg,
+                "display.busy_text_mode": text_mode,
+            }):
                 profile_name = self._busy_profile_name_for_source(event.source)
                 if profile_name:
                     from gateway.run import _load_gateway_runtime_config
@@ -4223,9 +4231,7 @@ class GatewaySlashCommandsMixin:
                     )
                 else:
                     self._busy_input_mode = arg
-                    self._busy_text_mode = (
-                        "queue" if arg == "queue" else "interrupt"
-                    )
+                    self._busy_text_mode = text_mode
 
                 adapter = self._adapter_for_source(event.source)
                 if adapter is not None:

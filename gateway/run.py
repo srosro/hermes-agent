@@ -9929,10 +9929,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
             fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
         )
-        input_modes = self.__dict__.setdefault("_busy_input_modes_by_profile", {})
-        text_modes = self.__dict__.setdefault("_busy_text_modes_by_profile", {})
-        input_modes[profile_name] = input_mode
-        text_modes[profile_name] = text_mode
+        self._busy_input_modes_by_profile[profile_name] = input_mode
+        self._busy_text_modes_by_profile[profile_name] = text_mode
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""
@@ -9952,8 +9950,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
             return fallback
-        modes = getattr(self, "_busy_input_modes_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        return self._busy_input_modes_by_profile.get(profile_name, fallback)
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
         """Resolve legacy busy text mode from the routed profile snapshot."""
@@ -9961,8 +9958,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
             return fallback
-        modes = getattr(self, "_busy_text_modes_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        return self._busy_text_modes_by_profile.get(profile_name, fallback)
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -16243,11 +16239,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter.set_platform_event_handler(
             self._make_profile_platform_event_handler(profile_name)
         )
-        text_modes = getattr(self, "_busy_text_modes_by_profile", None)
-        adapter._busy_text_mode = (
-            text_modes.get(profile_name, self._busy_text_mode)
-            if isinstance(text_modes, dict)
-            else self._busy_text_mode
+        adapter._busy_text_mode = self._busy_text_modes_by_profile.get(
+            profile_name, self._busy_text_mode
         )
 
     async def _run_secondary_profile_reconnect(

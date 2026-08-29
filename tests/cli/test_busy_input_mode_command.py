@@ -46,28 +46,50 @@ class TestHandleBusyCommand(unittest.TestCase):
         stub = self._make_cli("interrupt")
         with (
             patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch.object(cli_mod, "save_config_values", return_value=True) as mock_save,
         ):
             cli_mod.HermesCLI._handle_busy_command(stub, "/busy queue")
 
         self.assertEqual(stub.busy_input_mode, "queue")
-        mock_save.assert_called_once_with("display.busy_input_mode", "queue")
-
+        mock_save.assert_called_once_with({
+            "display.busy_input_mode": "queue",
+            "display.busy_text_mode": "queue",
+        })
 
     def test_steer_argument_sets_steer_mode_and_saves(self):
         cli_mod = _import_cli()
         stub = self._make_cli("interrupt")
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch.object(cli_mod, "save_config_values", return_value=True) as mock_save,
         ):
             cli_mod.HermesCLI._handle_busy_command(stub, "/busy steer")
 
         self.assertEqual(stub.busy_input_mode, "steer")
-        mock_save.assert_called_once_with("display.busy_input_mode", "steer")
+        mock_save.assert_called_once_with({
+            "display.busy_input_mode": "steer",
+            "display.busy_text_mode": "interrupt",
+        })
         printed = " ".join(str(c) for c in mock_cprint.call_args_list)
         self.assertIn("steer", printed.lower())
 
+    def test_managed_mode_is_rejected_before_live_mutation(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli("interrupt")
+        with (
+            patch.object(cli_mod, "_cprint") as mock_cprint,
+            patch.object(cli_mod, "save_config_values") as mock_save,
+            patch(
+                "hermes_cli.managed_scope.is_key_managed",
+                side_effect=lambda key: key == "display.busy_text_mode",
+            ),
+        ):
+            cli_mod.HermesCLI._handle_busy_command(stub, "/busy queue")
+
+        self.assertEqual(stub.busy_input_mode, "interrupt")
+        mock_save.assert_not_called()
+        printed = " ".join(str(c) for c in mock_cprint.call_args_list)
+        self.assertIn("administrator", printed.lower())
 
     def test_invalid_argument_prints_usage(self):
         cli_mod = _import_cli()
