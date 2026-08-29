@@ -1081,15 +1081,30 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
-def _busy_command_invocation(event: "MessageEvent") -> str:
+def _busy_command_invocation(
+    event: "MessageEvent", adapter: Optional["BasePlatformAdapter"] = None
+) -> str:
     """Return the busy spelling usable where this gateway reply will land."""
     platform = getattr(event.source.platform, "value", event.source.platform)
     if platform != "slack":
         return "/busy"
+    resolve_thread = getattr(adapter, "_resolve_thread_ts", None)
+    if callable(resolve_thread):
+        metadata = (
+            {"thread_id": event.source.thread_id}
+            if event.source.thread_id
+            else None
+        )
+        reply_thread = resolve_thread(reply_to=event.message_id, metadata=metadata)
+        return "!busy" if reply_thread else "/hermes busy"
     return "!busy" if event.source.thread_id or event.message_id else "/hermes busy"
 
 
-def _telegramize_command_mentions(text: str, event: "MessageEvent") -> str:
+def _telegramize_command_mentions(
+    text: str,
+    event: "MessageEvent",
+    adapter: Optional["BasePlatformAdapter"] = None,
+) -> str:
     """Rewrite command mentions for Telegram and Slack constraints.
 
     Telegram Bot API command names allow only lowercase letters, digits, and
@@ -1101,7 +1116,7 @@ def _telegramize_command_mentions(text: str, event: "MessageEvent") -> str:
     if platform_value == "slack":
         return re.sub(
             r"(?<![\w:/])/busy\b",
-            _busy_command_invocation(event),
+            _busy_command_invocation(event, adapter),
             text,
         )
     if platform_value != "telegram":
@@ -10863,7 +10878,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
-                _busy_invocation = _busy_command_invocation(event)
+                _busy_invocation = _busy_command_invocation(event, adapter)
                 message = (
                     f"{message}\n\n"
                     f"{busy_input_hint_gateway(_hint_mode, _busy_invocation)}"

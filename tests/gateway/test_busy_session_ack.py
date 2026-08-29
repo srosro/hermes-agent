@@ -411,13 +411,21 @@ class TestBusySessionOnboardingHint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("platform", "thread_id", "message_id", "invocation", "send_success"),
+        (
+            "platform",
+            "thread_id",
+            "message_id",
+            "reply_thread",
+            "invocation",
+            "send_success",
+        ),
         [
-            (Platform.TELEGRAM, None, "msg", "/busy", True),
-            (Platform.SLACK, None, "msg", "!busy", True),
-            (Platform.SLACK, "msg", "msg", "!busy", True),
-            (Platform.SLACK, "parent", "reply", "!busy", True),
-            (Platform.SLACK, None, "msg", "!busy", False),
+            (Platform.TELEGRAM, None, "msg", None, "/busy", True),
+            (Platform.SLACK, None, "msg", "msg", "!busy", True),
+            (Platform.SLACK, None, "msg", None, "/hermes busy", True),
+            (Platform.SLACK, "msg", "msg", "msg", "!busy", True),
+            (Platform.SLACK, "parent", "reply", "parent", "!busy", True),
+            (Platform.SLACK, None, "msg", "msg", "!busy", False),
         ],
     )
     async def test_first_busy_ack_appends_platform_hint(
@@ -427,6 +435,7 @@ class TestBusySessionOnboardingHint:
         platform,
         thread_id,
         message_id,
+        reply_thread,
         invocation,
         send_success,
     ):
@@ -441,6 +450,7 @@ class TestBusySessionOnboardingHint:
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
+        adapter._resolve_thread_ts = MagicMock(return_value=reply_thread)
         adapter._send_with_retry.return_value = SendResult(
             success=send_success,
             message_id="ack" if send_success else None,

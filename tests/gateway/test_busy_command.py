@@ -1,5 +1,7 @@
 """Smoke tests for gateway /busy command dispatch."""
 
+from types import SimpleNamespace
+
 import pytest
 
 import gateway.run as gateway_run
@@ -66,18 +68,22 @@ class TestBusyCommand:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("text", ["/busy status", "/busy bananas"])
     @pytest.mark.parametrize(
-        ("thread_id", "message_id", "invocation"),
+        ("thread_id", "message_id", "reply_thread", "invocation"),
         [
-            (None, None, "/hermes busy"),
-            (None, "msg", "!busy"),
-            ("msg", "msg", "!busy"),
-            ("parent", "reply", "!busy"),
+            (None, None, None, "/hermes busy"),
+            (None, "msg", "msg", "!busy"),
+            (None, "msg", None, "/hermes busy"),
+            ("msg", "msg", "msg", "!busy"),
+            ("parent", "reply", "parent", "!busy"),
         ],
     )
     async def test_slack_replies_use_registered_invocation(
-        self, text, thread_id, message_id, invocation
+        self, text, thread_id, message_id, reply_thread, invocation
     ):
         runner = _make_runner()
+        runner.adapters[Platform.SLACK] = SimpleNamespace(
+            _resolve_thread_ts=lambda **_kwargs: reply_thread
+        )
         event = _make_event(
             text,
             platform=Platform.SLACK,

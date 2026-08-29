@@ -1723,7 +1723,9 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.slash_exec import CommandContext, execute_command
 
         reply = execute_command("help", CommandContext(surface="gateway"))
-        return _telegramize_command_mentions(reply.text, event)
+        return _telegramize_command_mentions(
+            reply.text, event, self._adapter_for_source(event.source)
+        )
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -1740,7 +1742,9 @@ class GatewaySlashCommandsMixin:
                 options={"page_size": page_size},
             ),
         )
-        return _telegramize_command_mentions(reply.text, event)
+        return _telegramize_command_mentions(
+            reply.text, event, self._adapter_for_source(event.source)
+        )
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
@@ -4176,7 +4180,9 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _busy_command_invocation
 
         arg = event.get_command_args().strip().lower()
-        invocation = _busy_command_invocation(event)
+        invocation = _busy_command_invocation(
+            event, self._adapter_for_source(event.source)
+        )
         if not arg or arg == "status":
             # Report the mode actually in effect for this source: with
             # multiplex profiles a routed profile's startup snapshot can
