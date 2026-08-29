@@ -196,9 +196,16 @@ async def test_busy_status_dispatches_through_active_session_path(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("adapter_kind", ["primary", "secondary"])
+@pytest.mark.parametrize(
+    ("adapter_kind", "requested_mode", "legacy_text_mode"),
+    [
+        ("primary", "steer", None),
+        ("secondary", "steer", None),
+        ("secondary", "interrupt", "queue"),
+    ],
+)
 async def test_active_adapter_busy_change_updates_only_routed_profile(
-    tmp_path, monkeypatch, adapter_kind
+    tmp_path, monkeypatch, adapter_kind, requested_mode, legacy_text_mode
 ):
     """Active primary and secondary adapters persist /busy in the routed profile."""
     default_home = tmp_path / "default"
@@ -221,7 +228,12 @@ async def test_active_adapter_busy_change_updates_only_routed_profile(
         lambda _profile_name: True,
     )
     if adapter_kind == "secondary":
-        adapter = await _load_profile_snapshot(runner, profile_home, "queue")
+        adapter = await _load_profile_snapshot(
+            runner,
+            profile_home,
+            "queue",
+            legacy_text_mode=legacy_text_mode,
+        )
     else:
         profile_home.mkdir()
         profile_home.joinpath("config.yaml").write_text(
@@ -232,50 +244,26 @@ async def test_active_adapter_busy_change_updates_only_routed_profile(
         runner.adapters[Platform.TELEGRAM] = adapter
         adapter.set_message_handler(runner._make_default_profile_message_handler())
     event = _event(profile="research")
-    event.text = "/busy steer"
+    event.text = f"/busy {requested_mode}"
     runner._handle_message = runner._handle_busy_command
     session_key = build_session_key(event.source, profile="research")
     adapter._active_sessions[session_key] = asyncio.Event()
 
     await adapter.handle_message(event)
 
-    assert "busy_input_mode: steer" in profile_home.joinpath(
+    saved = profile_home.joinpath(
         "config.yaml"
     ).read_text(encoding="utf-8")
+    assert f"busy_input_mode: {requested_mode}" in saved
+    assert (
+        f"busy_text_mode: {'queue' if requested_mode == 'queue' else 'interrupt'}"
+        in saved
+    )
     assert "busy_input_mode: interrupt" in default_config.read_text(
         encoding="utf-8"
     )
     assert runner._busy_input_mode == "interrupt"
-    assert runner._effective_busy_input_mode(event.source) == "steer"
-    assert adapter._busy_text_mode == "interrupt"
-
-
-@pytest.mark.asyncio
-async def test_busy_change_replaces_explicit_legacy_text_override(
-    tmp_path, monkeypatch
-):
-    """A saved mode remains effective when legacy busy_text_mode was explicit."""
-    profile_home = tmp_path / "research"
-    monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir",
-        lambda _profile_name: profile_home,
-    )
-    runner = _runner(default_mode="interrupt")
-    adapter = await _load_profile_snapshot(
-        runner,
-        profile_home,
-        "queue",
-        legacy_text_mode="queue",
-    )
-    event = _event(profile="research")
-    event.text = "/busy interrupt"
-
-    await runner._make_profile_message_handler("research")(event)
-
-    saved = profile_home.joinpath("config.yaml").read_text(encoding="utf-8")
-    assert "busy_input_mode: interrupt" in saved
-    assert "busy_text_mode: interrupt" in saved
-    assert runner._effective_busy_text_mode(event.source) == "interrupt"
+    assert runner._effective_busy_input_mode(event.source) == requested_mode
     assert adapter._busy_text_mode == "interrupt"
 
 

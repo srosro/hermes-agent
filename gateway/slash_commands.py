@@ -4206,21 +4206,16 @@ class GatewaySlashCommandsMixin:
         try:
             from cli import save_config_values
             from hermes_cli import managed_scope
+            from hermes_cli.config import busy_mode_config_values
 
-            busy_keys = (
-                "display.busy_input_mode",
-                "display.busy_text_mode",
-            )
-            if any(managed_scope.is_key_managed(key) for key in busy_keys):
+            updates = busy_mode_config_values(arg)
+            if any(managed_scope.is_key_managed(key) for key in updates):
                 return EphemeralReply(
                     "Busy input mode is managed by your administrator and "
                     "cannot be changed here."
                 )
-            text_mode = "queue" if arg == "queue" else "interrupt"
-            if save_config_values({
-                "display.busy_input_mode": arg,
-                "display.busy_text_mode": text_mode,
-            }):
+            if save_config_values(updates):
+                text_mode = updates["display.busy_text_mode"]
                 profile_name = self._busy_profile_name_for_source(event.source)
                 if profile_name:
                     from gateway.run import _load_gateway_runtime_config

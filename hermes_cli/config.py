@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 _CONFIG_PARSE_WARNED: set = set()
 
 
+def busy_mode_config_values(mode: str) -> dict[str, str]:
+    """Return the canonical input and compatibility values for `/busy`."""
+    return {
+        "display.busy_input_mode": mode,
+        "display.busy_text_mode": "queue" if mode == "queue" else "interrupt",
+    }
+
+
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
 

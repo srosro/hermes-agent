@@ -4890,28 +4890,11 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 
 def save_config_value(key_path: str, value: any) -> bool:
     """Save one value to the active config file."""
-    from utils import atomic_roundtrip_yaml_update
-
-    return _save_config_updates(
-        {key_path: value},
-        lambda config_path: atomic_roundtrip_yaml_update(
-            config_path, key_path, value
-        ),
-    )
+    return save_config_values({key_path: value})
 
 
 def save_config_values(values: Mapping[str, Any]) -> bool:
-    """Save values to the active config file in one atomic mutation."""
-    from utils import atomic_roundtrip_yaml_updates
-
-    return _save_config_updates(
-        values,
-        lambda config_path: atomic_roundtrip_yaml_updates(config_path, values),
-    )
-
-
-def _save_config_updates(values: Mapping[str, Any], write_updates) -> bool:
-    """Apply one prepared atomic config mutation and shared post-write work.
+    """Save values to the active config file in one atomic mutation.
     
     Respects the same lookup order as load_cli_config():
     1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
@@ -4944,7 +4927,8 @@ def _save_config_updates(values: Mapping[str, Any], write_updates) -> bool:
         
         # Save back atomically while preserving comments, ordering, quotes, and
         # readable Unicode in user-edited config.yaml.
-        write_updates(config_path)
+        from utils import atomic_roundtrip_yaml_updates
+        atomic_roundtrip_yaml_updates(config_path, values)
         
         # Enforce owner-only permissions on config files (contain API keys)
         try:
