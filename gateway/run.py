@@ -1082,28 +1082,25 @@ def _resolve_gateway_display_bool(
 
 
 def _busy_command_invocation(
-    event: "MessageEvent", adapter: Optional["BasePlatformAdapter"] = None
+    event: "MessageEvent", adapter: "BasePlatformAdapter"
 ) -> str:
     """Return the busy spelling usable where this gateway reply will land."""
     platform = getattr(event.source.platform, "value", event.source.platform)
     if platform != "slack":
         return "/busy"
-    resolve_thread = getattr(adapter, "_resolve_thread_ts", None)
-    if callable(resolve_thread):
-        metadata = (
-            {"thread_id": event.source.thread_id}
-            if event.source.thread_id
-            else None
-        )
-        reply_thread = resolve_thread(reply_to=event.message_id, metadata=metadata)
-        return "!busy" if reply_thread else "/hermes busy"
-    return "!busy" if event.source.thread_id or event.message_id else "/hermes busy"
+    metadata = (
+        {"thread_id": event.source.thread_id} if event.source.thread_id else None
+    )
+    reply_thread = adapter._resolve_thread_ts(
+        reply_to=event.message_id, metadata=metadata
+    )
+    return "!busy" if reply_thread else "/hermes busy"
 
 
 def _telegramize_command_mentions(
     text: str,
     event: "MessageEvent",
-    adapter: Optional["BasePlatformAdapter"] = None,
+    adapter: "BasePlatformAdapter",
 ) -> str:
     """Rewrite command mentions for Telegram and Slack constraints.
 

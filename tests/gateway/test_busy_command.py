@@ -99,6 +99,9 @@ class TestBusyCommand:
     @pytest.mark.asyncio
     async def test_slack_thread_help_uses_thread_safe_busy_invocation(self):
         runner = _make_runner()
+        runner.adapters[Platform.SLACK] = SimpleNamespace(
+            _resolve_thread_ts=lambda **_kwargs: "parent"
+        )
         event = _make_event(
             "/help",
             platform=Platform.SLACK,
