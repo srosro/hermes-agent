@@ -4180,6 +4180,11 @@ class GatewaySlashCommandsMixin:
             /busy interrupt     Interrupt the current run (default)
         """
         arg = event.get_command_args().strip().lower()
+        invocation = (
+            "/hermes busy"
+            if event.source.platform == Platform.SLACK
+            else "/busy"
+        )
         if not arg or arg == "status":
             # Report the mode actually in effect for this source: with
             # multiplex profiles a routed profile's startup snapshot can
@@ -4194,12 +4199,14 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(
                 f"**Busy input mode: `{mode}`" + "\n"
                 f"Messages while busy: _{behavior}_" + "\n"
-                f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`."
+                f"Change with `{invocation} queue`, `{invocation} steer`, "
+                f"or `{invocation} interrupt`."
             )
 
         if arg not in {"queue", "interrupt", "steer"}:
             return EphemeralReply(
-                f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
+                f"Unknown mode `{arg}`. Use `{invocation} queue`, "
+                f"`{invocation} steer`, or `{invocation} interrupt`."
             )
 
         # Persist before mutate

@@ -20,9 +20,13 @@ def _make_runner(busy_mode="interrupt"):
     return runner
 
 
-def _make_event(text: str, chat_id: str = "chat-test") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "chat-test",
+    platform: Platform = Platform.TELEGRAM,
+) -> MessageEvent:
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         user_id=f"user-{chat_id}",
         chat_id=chat_id,
         user_name="tester",
@@ -55,6 +59,17 @@ class TestBusyCommand:
         event = _make_event("/busy bananas")
         result = await runner._handle_busy_command(event)
         assert "unknown" in str(result).lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["/busy status", "/busy bananas"])
+    async def test_slack_replies_use_registered_invocation(self, text):
+        runner = _make_runner()
+        event = _make_event(text, platform=Platform.SLACK)
+
+        result = await runner._handle_busy_command(event)
+
+        assert "/hermes busy" in str(result)
+        assert "`/busy " not in str(result)
 
 class TestBusyCommandPersistence:
     """Test /busy persistence with mocked save_config_value."""
