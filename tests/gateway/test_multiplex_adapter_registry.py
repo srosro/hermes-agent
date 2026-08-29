@@ -75,7 +75,7 @@ class TestCredentialFingerprint:
 class TestProfileMessageHandler:
     @pytest.mark.asyncio
     async def test_stamps_profile_on_unstamped_source(self):
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         seen = {}
 
         async def _fake_handle(event):
@@ -164,8 +164,15 @@ class _SecondaryRecoveryAdapter:
         self.platform_event_handler = handler
 
 
-def _secondary_recovery_runner(*, running=True):
+def _new_runner():
     runner = GatewayRunner.__new__(GatewayRunner)
+    runner._busy_input_modes_by_profile = {}
+    runner._busy_text_modes_by_profile = {}
+    return runner
+
+
+def _secondary_recovery_runner(*, running=True):
+    runner = _new_runner()
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._running = running
     runner._profile_adapters = {}
@@ -492,7 +499,7 @@ class TestSecondaryProfileConfigHandling:
         from gateway.run import SecondaryPortBindingConfigError
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         runner.config = GatewayConfig(multiplex_profiles=True)
         runner._profile_adapters = {}
 
@@ -616,7 +623,7 @@ class TestSecondaryProfileConfigHandling:
         from pathlib import Path
         from gateway.config import GatewayConfig
 
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         runner.config = GatewayConfig(
             multiplex_profiles=True,
             multiplex_profile_allowlist=["bad", "good"],
@@ -676,7 +683,7 @@ class TestSecondaryProfileConfigHandling:
         from gateway.config import GatewayConfig
         from gateway.run import MultiplexConfigError
 
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         runner.config = GatewayConfig(multiplex_profiles=True)
         runner.adapters = {}
         runner._profile_adapters = {}
@@ -728,7 +735,7 @@ class TestSecondaryProfileConfigHandling:
             async def disconnect(self):
                 self.disconnected = True
 
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         runner.config = GatewayConfig(multiplex_profiles=True)
         runner._profile_adapters = {}
         runner.session_store = None
@@ -788,7 +795,7 @@ class TestSecondaryProfileConfigHandling:
             async def disconnect(self):
                 self.disconnected = True
 
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         runner.config = GatewayConfig(multiplex_profiles=True)
         runner._profile_adapters = {}
         runner.session_store = None
@@ -830,7 +837,7 @@ class TestFeishuPortBindingConditional:
         from gateway.run import MultiplexConfigError
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
-        runner = GatewayRunner.__new__(GatewayRunner)
+        runner = _new_runner()
         runner.config = GatewayConfig(multiplex_profiles=True)
         runner._profile_adapters = {}
 
@@ -846,5 +853,3 @@ class TestFeishuPortBindingConditional:
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # no error, just nothing connected
-
-
