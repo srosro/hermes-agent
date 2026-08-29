@@ -1724,7 +1724,8 @@ class GatewaySlashCommandsMixin:
 
         reply = execute_command("help", CommandContext(surface="gateway"))
         return _telegramize_command_mentions(
-            reply.text, event, self._adapter_for_source(event.source)
+            reply.text,
+            getattr(getattr(event, "source", None), "platform", None),
         )
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
@@ -1743,7 +1744,8 @@ class GatewaySlashCommandsMixin:
             ),
         )
         return _telegramize_command_mentions(
-            reply.text, event, self._adapter_for_source(event.source)
+            reply.text,
+            getattr(getattr(event, "source", None), "platform", None),
         )
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
@@ -4272,12 +4274,7 @@ class GatewaySlashCommandsMixin:
             /busy steer         Inject messages mid-run without interrupting
             /busy interrupt     Interrupt the current run (default)
         """
-        from gateway.run import _busy_command_invocation
-
         arg = event.get_command_args().strip().lower()
-        invocation = _busy_command_invocation(
-            event, self._adapter_for_source(event.source)
-        )
         if not arg or arg == "status":
             # Report the mode actually in effect for this source: with
             # multiplex profiles a routed profile's startup snapshot can
@@ -4292,14 +4289,12 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(
                 f"**Busy input mode: `{mode}`" + "\n"
                 f"Messages while busy: _{behavior}_" + "\n"
-                f"Change with `{invocation} queue`, `{invocation} steer`, "
-                f"or `{invocation} interrupt`."
+                f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`."
             )
 
         if arg not in {"queue", "interrupt", "steer"}:
             return EphemeralReply(
-                f"Unknown mode `{arg}`. Use `{invocation} queue`, "
-                f"`{invocation} steer`, or `{invocation} interrupt`."
+                f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
             )
 
         # Persist before mutate

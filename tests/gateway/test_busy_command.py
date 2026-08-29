@@ -1,13 +1,10 @@
 """Smoke tests for gateway /busy command dispatch."""
 
-from types import SimpleNamespace
-
 import pytest
 
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent
-from gateway.relay.adapter import RelayAdapter
 from gateway.session import SessionSource
 
 
@@ -65,75 +62,6 @@ class TestBusyCommand:
         event = _make_event("/busy bananas")
         result = await runner._handle_busy_command(event)
         assert "unknown" in str(result).lower()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("text", ["/busy status", "/busy bananas"])
-    @pytest.mark.parametrize(
-        ("thread_id", "message_id", "reply_thread", "invocation"),
-        [
-            (None, None, None, "/hermes busy"),
-            (None, "msg", "msg", "!busy"),
-            (None, "msg", None, "/hermes busy"),
-            ("msg", "msg", "msg", "!busy"),
-            ("parent", "reply", "parent", "!busy"),
-        ],
-    )
-    async def test_slack_replies_use_registered_invocation(
-        self, text, thread_id, message_id, reply_thread, invocation
-    ):
-        runner = _make_runner()
-        runner.adapters[Platform.SLACK] = SimpleNamespace(
-            resolve_reply_thread_id=lambda **_kwargs: reply_thread
-        )
-        event = _make_event(
-            text,
-            platform=Platform.SLACK,
-            thread_id=thread_id,
-            message_id=message_id,
-        )
-
-        result = await runner._handle_busy_command(event)
-
-        assert invocation in str(result)
-        assert "`/busy " not in str(result)
-
-    @pytest.mark.asyncio
-    async def test_slack_thread_help_uses_thread_safe_busy_invocation(self):
-        runner = _make_runner()
-        runner.adapters[Platform.SLACK] = SimpleNamespace(
-            resolve_reply_thread_id=lambda **_kwargs: "parent"
-        )
-        event = _make_event(
-            "/help",
-            platform=Platform.SLACK,
-            thread_id="parent",
-            message_id="reply",
-        )
-
-        result = await runner._handle_help_command(event)
-
-        assert "`!busy" in result
-        assert "`/busy " not in result
-
-    @pytest.mark.asyncio
-    async def test_slack_relay_status_uses_relay_reply_location(self):
-        runner = _make_runner()
-        adapter = object.__new__(RelayAdapter)
-        adapter.config = SimpleNamespace(extra={"slack": {"reply_in_thread": False}})
-        adapter._platform_by_chat = {"chat-test": Platform.SLACK.value}
-        adapter._chat_type_by_chat = {"chat-test": "dm"}
-        runner.adapters[Platform.RELAY] = adapter
-        event = _make_event(
-            "/busy status",
-            platform=Platform.SLACK,
-            message_id="msg",
-        )
-        event.source.delivered_via_upstream_relay = True
-
-        result = await runner._handle_busy_command(event)
-
-        assert "`/hermes busy queue`" in str(result)
-
 
 class TestBusyCommandPersistence:
     """Test /busy persistence with mocked save_config_value."""
