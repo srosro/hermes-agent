@@ -7,6 +7,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply, MessageEvent
+from gateway.relay.adapter import RelayAdapter
 from gateway.session import SessionSource
 
 
@@ -82,7 +83,7 @@ class TestBusyCommand:
     ):
         runner = _make_runner()
         runner.adapters[Platform.SLACK] = SimpleNamespace(
-            _resolve_thread_ts=lambda **_kwargs: reply_thread
+            resolve_reply_thread_id=lambda **_kwargs: reply_thread
         )
         event = _make_event(
             text,
@@ -100,7 +101,7 @@ class TestBusyCommand:
     async def test_slack_thread_help_uses_thread_safe_busy_invocation(self):
         runner = _make_runner()
         runner.adapters[Platform.SLACK] = SimpleNamespace(
-            _resolve_thread_ts=lambda **_kwargs: "parent"
+            resolve_reply_thread_id=lambda **_kwargs: "parent"
         )
         event = _make_event(
             "/help",
@@ -113,6 +114,26 @@ class TestBusyCommand:
 
         assert "`!busy" in result
         assert "`/busy " not in result
+
+    @pytest.mark.asyncio
+    async def test_slack_relay_status_uses_relay_reply_location(self):
+        runner = _make_runner()
+        adapter = object.__new__(RelayAdapter)
+        adapter.config = SimpleNamespace(extra={"slack": {"reply_in_thread": False}})
+        adapter._platform_by_chat = {"chat-test": Platform.SLACK.value}
+        adapter._chat_type_by_chat = {"chat-test": "dm"}
+        runner.adapters[Platform.RELAY] = adapter
+        event = _make_event(
+            "/busy status",
+            platform=Platform.SLACK,
+            message_id="msg",
+        )
+        event.source.delivered_via_upstream_relay = True
+
+        result = await runner._handle_busy_command(event)
+
+        assert "`/hermes busy queue`" in str(result)
+
 
 class TestBusyCommandPersistence:
     """Test /busy persistence with mocked save_config_value."""

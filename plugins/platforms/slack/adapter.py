@@ -3876,6 +3876,16 @@ class SlackAdapter(BasePlatformAdapter):
                 return metadata["thread_ts"]
         return reply_to
 
+    def resolve_reply_thread_id(
+        self,
+        *,
+        chat_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Return the native Slack thread target selected for this reply."""
+        return self._resolve_thread_ts(reply_to=reply_to, metadata=metadata)
+
     async def _upload_file(
         self,
         chat_id: str,

@@ -2190,6 +2190,20 @@ class RelayAdapter(BasePlatformAdapter):
         # Flat mode: synthetic DM self-anchor — post flat at the DM root.
         return None
 
+    def resolve_reply_thread_id(
+        self,
+        *,
+        chat_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Return the relay Slack thread target selected for this reply."""
+        md = metadata or {}
+        effective_reply_to = self._resolve_reply_to_for_send(
+            chat_id, reply_to, md
+        )
+        return md.get("thread_id") or md.get("thread_ts") or effective_reply_to
+
     def _apply_slack_thread_anchor(
         self,
         chat_id: str,

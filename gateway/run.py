@@ -1091,8 +1091,10 @@ def _busy_command_invocation(
     metadata = (
         {"thread_id": event.source.thread_id} if event.source.thread_id else None
     )
-    reply_thread = adapter._resolve_thread_ts(
-        reply_to=event.message_id, metadata=metadata
+    reply_thread = adapter.resolve_reply_thread_id(
+        chat_id=event.source.chat_id,
+        reply_to=event.message_id,
+        metadata=metadata,
     )
     return "!busy" if reply_thread else "/hermes busy"
 
@@ -10865,7 +10867,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 busy_input_hint_gateway,
                 is_seen,
             )
-            _user_cfg = _load_gateway_config()
+            _busy_config_path = _gateway_config_home() / "config.yaml"
+            _profile_name = self._busy_profile_name_for_source(event.source)
+            if _profile_name:
+                from hermes_cli.profiles import get_profile_dir
+
+                _busy_config_path = get_profile_dir(_profile_name) / "config.yaml"
+            _user_cfg = _load_gateway_config(config_path=_busy_config_path)
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
                     _hint_mode = "steer"
@@ -10902,7 +10910,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _busy_hint_pending and send_result.success:
                 from agent.onboarding import BUSY_INPUT_FLAG, mark_seen
 
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                mark_seen(_busy_config_path, BUSY_INPUT_FLAG)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 

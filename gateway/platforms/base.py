@@ -4148,6 +4148,17 @@ class BasePlatformAdapter(ABC):
     async def disconnect(self) -> None:
         """Disconnect from the platform."""
         pass
+
+    def resolve_reply_thread_id(
+        self,
+        *,
+        chat_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Return the thread where a reply will land, if any."""
+        md = metadata or {}
+        return md.get("thread_id") or md.get("thread_ts") or reply_to
     
     @abstractmethod
     async def send(
