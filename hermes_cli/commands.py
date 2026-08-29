@@ -562,6 +562,18 @@ def is_gateway_known_command(name: str | None) -> bool:
     return False
 
 
+def rewrite_known_bang_command(text: str) -> str:
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+    if not text.startswith("!"):
+        return text
+
+    first_token = text[1:].split(maxsplit=1)[0]
+    cmd_name = first_token.split("@", 1)[0].lower()
+    if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+        return "/" + text[1:]
+    return text
+
+
 # Commands with explicit mid-run (running-agent) behavior in gateway/run.py.
 # DERIVED from the registry: every command whose ``busy_policy`` is not
 # "reject" either dispatches while the agent is busy or interrupts it first.

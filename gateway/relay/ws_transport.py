@@ -177,8 +177,14 @@ def _normalize_slack_parent_command(
     text: str,
     message_type: MessageType,
 ) -> tuple[str, MessageType]:
-    """Mirror native Slack ``/hermes`` routing for authenticated relay text."""
+    """Mirror native Slack bang and ``/hermes`` routing for relay text."""
     stripped = text.strip()
+    from hermes_cli.commands import rewrite_known_bang_command
+
+    bang_normalized = rewrite_known_bang_command(stripped)
+    if bang_normalized != stripped:
+        return bang_normalized, MessageType.COMMAND
+
     parent_parts = stripped.split(maxsplit=1)
     if not parent_parts or parent_parts[0] != "/hermes":
         return text, message_type

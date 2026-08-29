@@ -68,7 +68,8 @@ class TestBusyCommand:
     @pytest.mark.parametrize(
         ("thread_id", "message_id", "invocation"),
         [
-            (None, "msg", "/hermes busy"),
+            (None, None, "/hermes busy"),
+            (None, "msg", "!busy"),
             ("msg", "msg", "!busy"),
             ("parent", "reply", "!busy"),
         ],

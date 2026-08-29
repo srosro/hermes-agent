@@ -442,23 +442,6 @@ def _slack_mention_detection_text(event: dict) -> str:
     return (flat.strip() + "\n" + " ".join(extra)).strip()
 
 
-def _rewrite_known_bang_command(text: str) -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
-    if not text.startswith("!"):
-        return text
-
-    try:
-        from hermes_cli.commands import is_gateway_known_command
-
-        first_token = text[1:].split(maxsplit=1)[0]
-        cmd_name = first_token.split("@", 1)[0].lower()
-        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-            return "/" + text[1:]
-    except Exception:  # pragma: no cover - defensive
-        pass
-    return text
-
-
 def _slack_permalink_path(channel_id: str | None, message_ts: str | None) -> str:
     """The workspace-independent tail of a Slack message permalink.
 
@@ -6161,7 +6144,9 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
+        from hermes_cli.commands import rewrite_known_bang_command
+
+        command_probe_text = rewrite_known_bang_command(original_text.lstrip())
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
 
@@ -6567,7 +6552,9 @@ class SlackAdapter(BasePlatformAdapter):
             if mention_stripped.startswith("/"):
                 command_text = mention_stripped
             else:
-                command_text = _rewrite_known_bang_command(mention_stripped)
+                from hermes_cli.commands import rewrite_known_bang_command
+
+                command_text = rewrite_known_bang_command(mention_stripped)
             if command_text.startswith("/"):
                 original_text = command_text
                 text = command_text

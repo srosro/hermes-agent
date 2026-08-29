@@ -414,10 +414,10 @@ class TestBusySessionOnboardingHint:
         ("platform", "thread_id", "message_id", "invocation", "send_success"),
         [
             (Platform.TELEGRAM, None, "msg", "/busy", True),
-            (Platform.SLACK, None, "msg", "/hermes busy", True),
+            (Platform.SLACK, None, "msg", "!busy", True),
             (Platform.SLACK, "msg", "msg", "!busy", True),
             (Platform.SLACK, "parent", "reply", "!busy", True),
-            (Platform.SLACK, None, "msg", "/hermes busy", False),
+            (Platform.SLACK, None, "msg", "!busy", False),
         ],
     )
     async def test_first_busy_ack_appends_platform_hint(

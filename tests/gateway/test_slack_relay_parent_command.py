@@ -39,3 +39,12 @@ def test_slack_relay_parent_becomes_gateway_command(wire_text: str, expected: st
     assert event.source.delivered_via_upstream_relay is True
 
 
+def test_slack_relay_bang_command_becomes_gateway_command():
+    wire = _wire("!busy status")
+    wire["message_type"] = "text"
+
+    event = _event_from_wire(wire)
+
+    assert event.text == "/busy status"
+    assert event.message_type == MessageType.COMMAND
+

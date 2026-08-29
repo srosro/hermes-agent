@@ -1086,7 +1086,7 @@ def _busy_command_invocation(event: "MessageEvent") -> str:
     platform = getattr(event.source.platform, "value", event.source.platform)
     if platform != "slack":
         return "/busy"
-    return "!busy" if event.source.thread_id else "/hermes busy"
+    return "!busy" if event.source.thread_id or event.message_id else "/hermes busy"
 
 
 def _telegramize_command_mentions(text: str, event: "MessageEvent") -> str:
