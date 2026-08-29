@@ -1081,14 +1081,43 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
-def _telegramize_command_mentions(text: str, platform: Any) -> str:
-    """Rewrite slash-command mentions to Telegram-valid command names.
+def _busy_command_invocation(
+    event: "MessageEvent", adapter: "BasePlatformAdapter"
+) -> str:
+    """Return the busy spelling usable where this gateway reply will land."""
+    platform = getattr(event.source.platform, "value", event.source.platform)
+    if platform != "slack":
+        return "/busy"
+    metadata = (
+        {"thread_id": event.source.thread_id} if event.source.thread_id else None
+    )
+    reply_thread = adapter.resolve_reply_thread_id(
+        chat_id=event.source.chat_id,
+        reply_to=event.message_id,
+        metadata=metadata,
+    )
+    return "!busy" if reply_thread else "/hermes busy"
+
+
+def _telegramize_command_mentions(
+    text: str,
+    event: "MessageEvent",
+    adapter: "BasePlatformAdapter",
+) -> str:
+    """Rewrite command mentions for Telegram and Slack constraints.
 
     Telegram Bot API command names allow only lowercase letters, digits, and
-    underscores.  Keep other platform renderings unchanged, but normalize
-    Telegram help text so command mentions remain clickable/valid there.
+    underscores. Slack blocks native slash commands in threads and does not
+    register /busy outside threads, so render its usable spelling there too.
     """
+    platform = event.source.platform
     platform_value = getattr(platform, "value", platform)
+    if platform_value == "slack":
+        return re.sub(
+            r"(?<![\w:/])/busy\b",
+            _busy_command_invocation(event, adapter),
+            text,
+        )
     if platform_value != "telegram":
         return text
 
@@ -9929,10 +9958,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
             fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
         )
-        input_modes = self.__dict__.setdefault("_busy_input_modes_by_profile", {})
-        text_modes = self.__dict__.setdefault("_busy_text_modes_by_profile", {})
-        input_modes[profile_name] = input_mode
-        text_modes[profile_name] = text_mode
+        self._busy_input_modes_by_profile[profile_name] = input_mode
+        self._busy_text_modes_by_profile[profile_name] = text_mode
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""
@@ -9952,8 +9979,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
             return fallback
-        modes = getattr(self, "_busy_input_modes_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        return self._busy_input_modes_by_profile.get(profile_name, fallback)
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
         """Resolve legacy busy text mode from the routed profile snapshot."""
@@ -9961,8 +9987,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
             return fallback
-        modes = getattr(self, "_busy_text_modes_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        return self._busy_text_modes_by_profile.get(profile_name, fallback)
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -10833,16 +10858,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
-        # queue/interrupt knob.  Flag is persisted to config.yaml so it never
-        # fires again on this install.
+        # queue/interrupt knob. The flag is persisted to the routed profile's
+        # config.yaml so each profile gets its own first-touch hint.
+        _busy_hint_pending = False
         try:
             from agent.onboarding import (
                 BUSY_INPUT_FLAG,
                 busy_input_hint_gateway,
                 is_seen,
-                mark_seen,
             )
-            _user_cfg = _load_gateway_config()
+            _busy_config_path = _gateway_config_home() / "config.yaml"
+            _profile_name = self._busy_profile_name_for_source(event.source)
+            if _profile_name:
+                from hermes_cli.profiles import get_profile_dir
+
+                _busy_config_path = get_profile_dir(_profile_name) / "config.yaml"
+            _user_cfg = _load_gateway_config(config_path=_busy_config_path)
             if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
                 if is_steer_mode:
                     _hint_mode = "steer"
@@ -10852,18 +10883,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
+                _busy_invocation = _busy_command_invocation(event, adapter)
                 message = (
                     f"{message}\n\n"
-                    f"{busy_input_hint_gateway(_hint_mode)}"
+                    f"{busy_input_hint_gateway(_hint_mode, _busy_invocation)}"
                 )
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                _busy_hint_pending = True
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
         try:
-            await adapter._send_with_retry(
+            send_result = await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=(
@@ -10875,6 +10907,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 metadata=thread_meta,
             )
+            if _busy_hint_pending and send_result.success:
+                from agent.onboarding import BUSY_INPUT_FLAG, mark_seen
+
+                mark_seen(_busy_config_path, BUSY_INPUT_FLAG)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
@@ -16243,11 +16279,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter.set_platform_event_handler(
             self._make_profile_platform_event_handler(profile_name)
         )
-        text_modes = getattr(self, "_busy_text_modes_by_profile", None)
-        adapter._busy_text_mode = (
-            text_modes.get(profile_name, self._busy_text_mode)
-            if isinstance(text_modes, dict)
-            else self._busy_text_mode
+        adapter._busy_text_mode = self._busy_text_modes_by_profile.get(
+            profile_name, self._busy_text_mode
         )
 
     async def _run_secondary_profile_reconnect(
@@ -17163,7 +17196,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "deny": self._handle_deny_command,
             "pause": self._handle_pause_command,
             "agents": self._handle_agents_command,
-            "background": self._handle_background_command,
+            "bg": self._handle_background_command,
+            "btw": self._handle_btw_command,
             "kanban": self._handle_kanban_command,
             "subgoal": self._handle_subgoal_command,
             "heartbeat": self._handle_heartbeat_command,
@@ -23375,6 +23409,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
+                            is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
@@ -23708,6 +23743,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 chat_id=source.chat_id,
                                 audio_path=media_path,
                                 metadata=_thread_metadata,
+                                is_voice=_is_voice,
                             )
                         elif _ext in _VIDEO_EXTS:
                             await adapter.send_video(

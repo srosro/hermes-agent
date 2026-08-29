@@ -28,6 +28,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     Platform,
+    SendResult,
     SessionSource,
     build_session_key,
 )
@@ -67,6 +68,7 @@ def _make_runner():
     runner._busy_text_mode = "interrupt"
     runner.adapters = {}
     runner.config = MagicMock()
+    runner.config.multiplex_profiles = False
     runner.config.group_sessions_per_user = True
     runner.config.thread_sessions_per_user = False
     runner.session_store = None
@@ -82,7 +84,9 @@ def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
     adapter._pending_messages = {}
-    adapter._send_with_retry = AsyncMock()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="ack")
+    )
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)
@@ -407,20 +411,57 @@ class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""
 
     @pytest.mark.asyncio
-    async def test_first_busy_ack_appends_interrupt_hint(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        (
+            "platform",
+            "thread_id",
+            "message_id",
+            "reply_thread",
+            "invocation",
+            "send_success",
+        ),
+        [
+            (Platform.TELEGRAM, None, "msg", None, "/busy", True),
+            (Platform.SLACK, None, "msg", "msg", "!busy", True),
+            (Platform.SLACK, None, "msg", None, "/hermes busy", True),
+            (Platform.SLACK, "msg", "msg", "msg", "!busy", True),
+            (Platform.SLACK, "parent", "reply", "parent", "!busy", True),
+            (Platform.SLACK, None, "msg", "msg", "!busy", False),
+        ],
+    )
+    async def test_first_busy_ack_appends_platform_hint(
+        self,
+        tmp_path,
+        monkeypatch,
+        platform,
+        thread_id,
+        message_id,
+        reply_thread,
+        invocation,
+        send_success,
+    ):
         """First busy-while-running message gets an extra hint about /busy."""
         import gateway.run as _gr
 
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # mark_seen imports utils.atomic_yaml_write; make sure it resolves
         # against a writable dir by pointing _hermes_home at tmp_path.
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda **_kwargs: {})
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
+        adapter.resolve_reply_thread_id = MagicMock(return_value=reply_thread)
+        adapter._send_with_retry.return_value = SendResult(
+            success=send_success,
+            message_id="ack" if send_success else None,
+            error=None if send_success else "delivery failed",
+        )
 
         event = _make_event(text="ping")
+        event.source.platform = platform
+        event.source.thread_id = thread_id
+        event.message_id = message_id
         sk = build_session_key(event.source)
 
         agent = MagicMock()
@@ -442,11 +483,57 @@ class TestBusySessionOnboardingHint:
         assert "Interrupting" in content
         # First-touch hint appended
         assert "First-time tip" in content
-        assert "/busy queue" in content
+        assert f"{invocation} queue" in content
+        if platform == Platform.SLACK:
+            assert "`/busy " not in content
 
-        # The flag is now persisted to tmp_path/config.yaml
+        cfg_path = tmp_path / "config.yaml"
+        if send_success:
+            import yaml
+
+            cfg = yaml.safe_load(cfg_path.read_text())
+            assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
+        else:
+            assert not cfg_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_busy_hint_is_persisted_per_routed_profile(self, tmp_path, monkeypatch):
+        """One profile's first busy hint must not suppress another profile's hint."""
+        import gateway.run as _gr
+
+        default_home = tmp_path / "default"
+        research_home = tmp_path / "research"
+        default_home.mkdir()
+        research_home.mkdir()
+        monkeypatch.setattr(_gr, "_hermes_home", default_home)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda profile: research_home if profile == "research" else default_home,
+        )
+
+        runner, _sentinel = _make_runner()
+        runner.config.multiplex_profiles = True
+        runner._busy_input_modes_by_profile = {"research": "interrupt"}
+        runner._busy_text_modes_by_profile = {"research": "interrupt"}
+        adapter = _make_adapter()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        runner._profile_adapters = {"research": {Platform.TELEGRAM: adapter}}
+        event = _make_event(text="ping")
+        event.source.platform = Platform.TELEGRAM
+        event.source.profile = "research"
+        sk = runner._session_key_for_source(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._session_state(sk).turn.agent = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "First-time tip" in content
+        assert not (default_home / "config.yaml").exists()
         import yaml
-        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        cfg = yaml.safe_load((research_home / "config.yaml").read_text())
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 
@@ -469,5 +556,3 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
-

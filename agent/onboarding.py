@@ -3,8 +3,8 @@ Contextual first-touch onboarding hints.
 
 Instead of blocking first-run questionnaires, show a one-time hint the *first*
 time a user hits a behavior fork — message-while-running, first long-running
-tool, etc.  Each hint is shown once per install (tracked in ``config.yaml`` under
-``onboarding.seen.<flag>``) and then never again.
+tool, etc. Each hint is tracked in the relevant ``config.yaml`` under
+``onboarding.seen.<flag>``; gateway hints are scoped to the routed profile.
 
 Keep this module tiny and dependency-free so both the CLI and gateway can import
 it without pulling in heavy modules.
@@ -33,7 +33,7 @@ PROFILE_BUILD_FLAG = "profile_build_offered"
 # Hint content
 # -------------------------------------------------------------------------
 
-def busy_input_hint_gateway(mode: str) -> str:
+def busy_input_hint_gateway(mode: str, invocation: str = "/busy") -> str:
     """Hint shown the first time a user messages while the agent is busy.
 
     ``mode`` is the effective busy_input_mode that was just applied, so the
@@ -42,28 +42,29 @@ def busy_input_hint_gateway(mode: str) -> str:
     if mode == "queue":
         return (
             "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
+            f"Send `{invocation} interrupt` to make new messages stop the current "
+            f"task immediately, or `{invocation} status` to check. This notice "
+            "won't appear again."
         )
     if mode == "steer":
         return (
             "💡 First-time tip — I steered your message into the current run; "
             "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
+            f"Send `{invocation} interrupt` or `{invocation} queue` to change this, "
+            f"or `{invocation} status` to check. This notice won't appear again."
         )
     if mode == "redirect":
         return (
             "💡 First-time tip — I redirected the current run using your message. "
             "Completed work stays in context, and `/stop` still cancels the task. "
-            "Send `/busy queue` to wait for a separate turn, or `/busy status` "
-            "to check. This notice won't appear again."
+            f"Send `{invocation} queue` to wait for a separate turn, or "
+            f"`{invocation} status` to check. This notice won't appear again."
         )
     return (
         "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
+        f"Send `{invocation} queue` to queue follow-ups for after the current task "
+        f"instead, `{invocation} steer` to inject them mid-run without interrupting, "
+        f"or `{invocation} status` to check. This notice won't appear again."
     )
 
 

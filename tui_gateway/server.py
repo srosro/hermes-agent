@@ -5689,18 +5689,23 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         logger.debug("failed to persist model switch marker", exc_info=True)
 
 
-def _write_config_key(key_path: str, value):
+def _write_config_keys(updates: dict[str, object]) -> None:
     # Write-back round-trip: raw read is mandatory — saving the managed-
     # overlaid / env-expanded view would persist those values into the file.
     cfg = _load_cfg_raw()
-    current = cfg
-    keys = key_path.split(".")
-    for key in keys[:-1]:
-        if key not in current or not isinstance(current.get(key), dict):
-            current[key] = {}
-        current = current[key]
-    current[keys[-1]] = value
+    for key_path, value in updates.items():
+        current = cfg
+        keys = key_path.split(".")
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
     _save_cfg(cfg)
+
+
+def _write_config_key(key_path: str, value):
+    _write_config_keys({key_path: value})
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
@@ -13955,12 +13960,22 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "busy":
+        from hermes_cli import managed_scope
+        from hermes_cli.config import busy_mode_config_values
+
         raw = str(value or "").strip().lower()
         if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
         if raw not in {"queue", "steer", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
-        _write_config_key("display.busy_input_mode", raw)
+        updates = busy_mode_config_values(raw)
+        if any(managed_scope.is_key_managed(path) for path in updates):
+            return _err(
+                rid,
+                4002,
+                "Busy input mode is managed by your administrator and cannot be changed.",
+            )
+        _write_config_keys(updates)
         return _ok(rid, {"key": key, "value": raw})
 
     if key == "verbose":

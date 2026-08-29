@@ -8351,7 +8351,7 @@ def test_config_busy_get_and_set(monkeypatch):
         lambda: {"display": {"busy_input_mode": "steer"}},
     )
     monkeypatch.setattr(
-        server, "_write_config_key", lambda path, value: writes.append((path, value))
+        server, "_write_config_keys", lambda values: writes.append(values)
     )
 
     get_resp = server.handle_request(
@@ -8367,7 +8367,37 @@ def test_config_busy_get_and_set(monkeypatch):
         }
     )
     assert set_resp["result"]["value"] == "interrupt"
-    assert ("display.busy_input_mode", "interrupt") in writes
+    assert writes == [{
+        "display.busy_input_mode": "interrupt",
+        "display.busy_text_mode": "interrupt",
+    }]
+
+
+@pytest.mark.parametrize(
+    "managed_key",
+    ["display.busy_input_mode", "display.busy_text_mode"],
+)
+def test_config_set_busy_rejects_managed_mode(monkeypatch, managed_key):
+    writes = []
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.is_key_managed",
+        lambda key: key == managed_key,
+    )
+    monkeypatch.setattr(
+        server, "_write_config_keys", lambda values: writes.append(values)
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "busy", "value": "queue"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4002
+    assert "administrator" in resp["error"]["message"].lower()
+    assert writes == []
 
 
 def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):

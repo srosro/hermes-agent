@@ -197,8 +197,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
                gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch",
                desktop="messaging"),
-    CommandDef("background", "Run a prompt in the background", "Session",
-               aliases=("bg", "btw"), args_hint="<prompt>", busy_policy="dispatch"),
+    CommandDef("bg", "Run a prompt in a separate background session", "Session",
+               args_hint="<prompt>", busy_policy="dispatch"),
+    CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
+               args_hint="<question>", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",
@@ -507,7 +509,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
         "compress", "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
-        "background", "bg", "btw", "agents", "tasks", "queue", "q", "steer",
+        "bg", "btw", "agents", "tasks", "queue", "q", "steer",
         "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
         "moa", "journey", "learning", "memory-graph",
     ),
@@ -560,6 +562,21 @@ def is_gateway_known_command(name: str | None) -> bool:
         if plugin_name == name:
             return True
     return False
+
+
+def rewrite_known_bang_command(text: str) -> str:
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+    if not text.startswith("!"):
+        return text
+
+    parts = text[1:].split(maxsplit=1)
+    if not parts:
+        return text
+    first_token = parts[0]
+    cmd_name = first_token.split("@", 1)[0].lower()
+    if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+        return "/" + text[1:]
+    return text
 
 
 # Commands with explicit mid-run (running-agent) behavior in gateway/run.py.
@@ -719,7 +736,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
 
-    Built-in commands that require arguments (e.g. /queue, /steer, /background)
+    Built-in commands that require arguments (e.g. /queue, /steer, /bg)
     are **included** because their handlers return usage text when selected
     without a payload, making them discoverable via autocomplete.
 
@@ -775,7 +792,8 @@ _TELEGRAM_MENU_PRIORITY = (
     "deny",
     "queue",
     "steer",
-    "background",
+    "bg",
+    "btw",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
     "usage",
@@ -1365,7 +1383,9 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # would otherwise get, and the Telegram-parity test fails when a canonical
 # gets clamped ("reset" was unpinned for exactly that — /new keeps its
 # native slot, the alias spelling stays reachable via /hermes reset).
-_SLACK_PRIORITY_ALIASES = ("btw", "bg")
+# (Currently empty: /bg and /btw were promoted from aliases of /background
+# to canonical commands, so they win first-pass slots on their own.)
+_SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 
 # Canonical commands intentionally NOT given a native Slack slash slot. Slack
 # caps apps at 50 slash commands and the registry is at that ceiling; rather
@@ -1411,7 +1431,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights"})
+#   - busy: set-once preference for what a message does mid-run; reached via
+#     /hermes busy on Slack. Demoted at the 50-cap when /busy became
+#     gateway-available — without this entry /busy claims a native slot and
+#     silently clamps /insights (a recurring inspection surface), breaking
+#     Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "busy"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1435,7 +1460,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     first-class slash and not a ``/hermes <verb>`` subcommand.
 
     Both canonical names and aliases are included so users can type any
-    documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
+    documented form; aliases are surfaced alongside canonical names.
     Plugin-registered slash commands are included too.
 
     Commands whose sanitized name collides with a Slack built-in
@@ -1538,7 +1563,7 @@ def slack_subcommand_map() -> dict[str, str]:
     """Return subcommand -> /command mapping for Slack /hermes handler.
 
     Maps both canonical names and aliases so /hermes bg do stuff works
-    the same as /hermes background do stuff.
+    the same as /hermes bg do stuff.
 
     Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
     routes through the plugin handler.

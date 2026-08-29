@@ -42,7 +42,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode
 /yolo                    Toggle approval bypass
-/busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
+/busy [queue|steer|interrupt] How messages behave while working (Slack channel: /hermes busy ...; thread: !busy ...)
 /indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
 /footer [on|off]         Gateway runtime-metadata footer on replies
 /skin [name]             Change theme (CLI)
@@ -83,6 +83,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /sethome                   Set current chat as home channel (GW)
 /topic [off|help]          Telegram DM topic sessions (GW)
 /platform <pause|resume|list> Pause/resume a failing platform (GW)
+/busy [queue|steer|interrupt|status] Busy handling (Slack channel: /hermes busy ...; thread: !busy ...)
 /commands [page]           Browse all commands, paginated (GW)
 ```
 
