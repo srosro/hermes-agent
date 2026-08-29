@@ -10848,9 +10848,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hint_mode = "redirect"
                 else:
                     _hint_mode = "interrupt"
+                _busy_invocation = (
+                    "/hermes busy"
+                    if event.source.platform == Platform.SLACK
+                    else "/busy"
+                )
                 message = (
                     f"{message}\n\n"
-                    f"{busy_input_hint_gateway(_hint_mode)}"
+                    f"{busy_input_hint_gateway(_hint_mode, _busy_invocation)}"
                 )
                 mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
         except Exception as _onb_err:

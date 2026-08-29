@@ -407,7 +407,13 @@ class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""
 
     @pytest.mark.asyncio
-    async def test_first_busy_ack_appends_interrupt_hint(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("platform", "invocation"),
+        [(Platform.TELEGRAM, "/busy"), (Platform.SLACK, "/hermes busy")],
+    )
+    async def test_first_busy_ack_appends_platform_hint(
+        self, tmp_path, monkeypatch, platform, invocation
+    ):
         """First busy-while-running message gets an extra hint about /busy."""
         import gateway.run as _gr
 
@@ -421,6 +427,7 @@ class TestBusySessionOnboardingHint:
         adapter = _make_adapter()
 
         event = _make_event(text="ping")
+        event.source.platform = platform
         sk = build_session_key(event.source)
 
         agent = MagicMock()
@@ -442,7 +449,9 @@ class TestBusySessionOnboardingHint:
         assert "Interrupting" in content
         # First-touch hint appended
         assert "First-time tip" in content
-        assert "/busy queue" in content
+        assert f"{invocation} queue" in content
+        if platform == Platform.SLACK:
+            assert "`/busy " not in content
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
@@ -469,5 +478,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 
