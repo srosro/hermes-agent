@@ -190,6 +190,21 @@ async def test_send_group():
     assert result.success is True
 
 
+@pytest.mark.asyncio
+async def test_send_without_live_socket_is_retryable():
+    from gateway.config import PlatformConfig
+
+    adapter = SimplexAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    )
+
+    result = await adapter.send("contact-42", "Try after reconnect")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert "not connected" in (result.error or "").lower()
+
+
 # ---------------------------------------------------------------------------
 # 7b. Channel directory enumeration (list_channels)
 # ---------------------------------------------------------------------------
@@ -386,5 +401,4 @@ def _make_file_chat_item(file_path: str, file_name: str) -> dict:
             },
         },
     }
-
 

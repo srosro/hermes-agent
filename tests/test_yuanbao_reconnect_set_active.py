@@ -104,3 +104,15 @@ async def test_do_reconnect_does_not_set_active_on_failure():
 
         # get_active() should still be None
         assert get_active_adapter() is None
+
+
+def test_schedule_reconnect_marks_deferred_work_not_ready():
+    adapter = _make_adapter()
+    adapter.notify_deferred_questions_disconnected = MagicMock()
+    adapter._running = False
+    cm = ConnectionManager(adapter)
+    cm._reconnecting = True
+
+    cm.schedule_reconnect()
+
+    adapter.notify_deferred_questions_disconnected.assert_called_once_with()

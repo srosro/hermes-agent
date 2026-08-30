@@ -107,21 +107,40 @@ class TestSendWithRetryNetworkRetry:
         assert result.success
         assert len(adapter._send_calls) == 2  # initial + 1 retry
 
+    @pytest.mark.parametrize(
+        "retry_first", [False, True], ids=["initial", "during-retry"]
+    )
+    @pytest.mark.parametrize(
+        "explicit_ambiguity", [False, True], ids=["timeout", "explicit-ambiguity"]
+    )
     @pytest.mark.asyncio
-    async def test_timeout_not_retried_to_prevent_duplicates(self):
-        """ReadTimeout is NOT retried because the request may have reached
-        the server — retrying a non-idempotent send risks duplicate delivery.
-        It also skips plain-text fallback (timeout is not a formatting issue)."""
+    async def test_uncertain_failure_stops_further_delivery(
+        self, retry_first, explicit_ambiguity
+    ):
         adapter = _StubAdapter()
-        adapter._send_results = [
-            SendResult(success=False, error="ReadTimeout: request timed out"),
-        ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
-        # No retry, no fallback — timeout returns failure immediately
-        mock_sleep.assert_not_called()
-        assert not result.success
-        assert len(adapter._send_calls) == 1
+        uncertain = SendResult(
+            success=False,
+            error=(
+                "relay transport connection lost"
+                if explicit_ambiguity
+                else "ReadTimeout: request timed out"
+            ),
+            ambiguous=explicit_ambiguity,
+        )
+        prior_results = (
+            [SendResult(success=False, error="not connected", retryable=True)]
+            if retry_first
+            else []
+        )
+        adapter._send_results = [*prior_results, uncertain]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry(
+                "chat1", "hello", max_retries=3, base_delay=0
+            )
+
+        assert result is uncertain
+        assert len(adapter._send_calls) == len(prior_results) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -205,4 +224,3 @@ class TestSendWithRetryAfter:
         # Second sleep should use the retry_after from the second result
         second_sleep = mock_sleep.call_args_list[1][0][0]
         assert second_sleep >= 29.0  # 30 - 1 (max jitter)
-

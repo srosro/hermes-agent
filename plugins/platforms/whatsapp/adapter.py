@@ -461,6 +461,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._bridge_health_connected = False
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -486,6 +487,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+
+    def notify_deferred_questions_connected(self) -> None:
+        """Publish deferred readiness only when WhatsApp itself is usable."""
+        if getattr(self, "_bridge_health_connected", False):
+            super().notify_deferred_questions_connected()
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
@@ -656,10 +662,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     and config_matches
                                 ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                    self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
+                                    self._bridge_health_connected = True
+                                    self._mark_connected()
                                     # Plugin-registered native handlers.
                                     self._wire_plugin_handlers(None)
                                     return True
@@ -818,9 +825,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._http_session = aiohttp.ClientSession()
 
             # Start message polling task
+            bridge_connected = data.get("status") == "connected"
+            self._bridge_health_connected = bridge_connected
+            self._running = True
             self._poll_task = asyncio.create_task(self._poll_messages())
-            
-            self._mark_connected()
+            if bridge_connected:
+                self._mark_connected()
+            else:
+                self.notify_deferred_questions_disconnected()
+                self._write_runtime_status_safe(
+                    "connecting", platform_state="connecting"
+                )
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             # Plugin-registered native handlers.
             self._wire_plugin_handlers(None)
@@ -922,6 +937,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         self._release_platform_lock()
 
+        self._bridge_health_connected = False
         self._mark_disconnected()
         self._bridge_process = None
         self._close_bridge_log()
@@ -981,7 +997,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             sent_message_ids.append(str(last_message_id))
                     else:
                         error = await resp.text()
-                        return SendResult(success=False, error=error)
+                        if resp.status == 503:
+                            self._publish_bridge_health(False)
+                        return SendResult(
+                            success=False,
+                            error=error,
+                            retryable=resp.status == 503,
+                        )
 
                 # Small delay between chunks to avoid rate limiting
                 if len(chunks) > 1:
@@ -1327,6 +1349,37 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         
         return {"name": chat_id, "type": "dm"}
     
+    def _publish_bridge_health(self, connected: bool) -> None:
+        """Publish deferred readiness when bridge health changes."""
+        previous = getattr(self, "_bridge_health_connected", False)
+        self._bridge_health_connected = connected
+        if connected and not previous:
+            self._mark_connected()
+        elif previous and not connected:
+            self.notify_deferred_questions_disconnected()
+            self._write_runtime_status_safe(
+                "connecting", platform_state="connecting"
+            )
+
+    async def _refresh_bridge_health(self) -> bool:
+        """Refresh WhatsApp connectivity without stopping the bridge poller."""
+        if not self._http_session:
+            self._publish_bridge_health(False)
+            return False
+        try:
+            import aiohttp
+
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/health",
+                timeout=aiohttp.ClientTimeout(total=2),
+            ) as resp:
+                data = await resp.json() if resp.status == 200 else {}
+                connected = data.get("status") == "connected"
+        except Exception:
+            connected = False
+        self._publish_bridge_health(connected)
+        return connected
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
@@ -1338,6 +1391,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if bridge_exit:
                 print(f"[{self.name}] {bridge_exit}")
                 break
+            if not await self._refresh_bridge_health():
+                await asyncio.sleep(1)
+                continue
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",

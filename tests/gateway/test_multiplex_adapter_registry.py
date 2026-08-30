@@ -95,6 +95,35 @@ class TestProfileMessageHandler:
         assert result == "ok"
         assert seen["profile"] == "coder"
 
+    def test_primary_adapter_binds_each_routed_profiles_deferred_store(
+        self, monkeypatch
+    ):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        adapter = MagicMock()
+        work_service = object()
+        monkeypatch.setattr(
+            gateway_run,
+            "_multiplex_profile_homes",
+            lambda _config: [
+                ("default", Path("/profiles/default")),
+                ("work", Path("/profiles/work")),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setattr(
+            "gateway.deferred_questions.get_deferred_question_service",
+            lambda: work_service,
+        )
+
+        runner._bind_multiplex_deferred_services(adapter)
+
+        adapter.set_deferred_question_service.assert_called_once_with(
+            work_service, profile_name="work"
+        )
+
 
 class TestProfileRuntimeStatus:
     def test_base_adapter_uses_namespaced_platform_key(self, monkeypatch):
@@ -846,5 +875,4 @@ class TestFeishuPortBindingConditional:
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # no error, just nothing connected
-
 

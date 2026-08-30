@@ -3661,6 +3661,7 @@ class ConnectionManager:
 
     def schedule_reconnect(self) -> None:
         """Schedule a reconnect only if running and not already reconnecting."""
+        self._adapter.notify_deferred_questions_disconnected()
         if self._adapter._running and not self._reconnecting:
             asyncio.create_task(self._reconnect_with_backoff())
 

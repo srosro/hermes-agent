@@ -244,6 +244,11 @@ class SimplexAdapter(BasePlatformAdapter):
         self._wire_plugin_handlers(None)
         return True
 
+    @property
+    def is_connected(self) -> bool:
+        ws = self._ws
+        return bool(self._running and ws is not None and not getattr(ws, "closed", False))
+
     async def disconnect(self) -> None:
         """Stop WebSocket listener and clean up."""
         self._running = False
@@ -307,6 +312,7 @@ class SimplexAdapter(BasePlatformAdapter):
                     close_timeout=10,
                 ) as ws:
                     self._ws = ws
+                    self._mark_connected()
                     backoff = WS_RETRY_DELAY_INITIAL
                     self._last_ws_activity = time.time()
                     logger.info("SimpleX WS: connected")
@@ -338,6 +344,7 @@ class SimplexAdapter(BasePlatformAdapter):
                         e, backoff,
                     )
             finally:
+                self.notify_deferred_questions_disconnected()
                 self._ws = None
 
             if self._running:
@@ -741,7 +748,7 @@ class SimplexAdapter(BasePlatformAdapter):
                     break
         return corr_id
 
-    async def _send_ws(self, payload: dict) -> None:
+    async def _send_ws(self, payload: dict) -> bool:
         """Fire-and-forget JSON payload write.
 
         Drops cleanly when the WebSocket is missing or already closed; the
@@ -751,11 +758,13 @@ class SimplexAdapter(BasePlatformAdapter):
         ws = self._ws
         if not ws:
             logger.debug("SimpleX: WS send dropped (not connected)")
-            return
+            return False
         try:
             await ws.send(json.dumps(payload))
+            return True
         except Exception as e:
             logger.warning("SimpleX: WS send error: %s", e)
+            return False
 
     async def _send_command(
         self, command: str, timeout: float = 30.0
@@ -844,7 +853,12 @@ class SimplexAdapter(BasePlatformAdapter):
             else:
                 cmd_str = f"/_send @{chat_id} json {composed}"
 
-            await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
+            if not await self._send_ws({"corrId": corr_id, "cmd": cmd_str}):
+                return SendResult(
+                    success=False,
+                    error="SimpleX WebSocket is not connected",
+                    retryable=True,
+                )
 
         for path in media_paths:
             is_voice = os.path.splitext(path)[1].lower() in _voice_exts

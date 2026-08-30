@@ -125,7 +125,8 @@ CAPABILITY_REGISTRY: Dict[str, CapabilitySpec] = {
             legacy_path=("allow_platform_actions",),
             description=(
                 "Act on connected chat platforms as the gateway bot "
-                "(add reactions, rename threads) via ctx.platform_actions"
+                "(add reactions, rename threads, or ask deferred questions "
+                "and capture their replies)"
             ),
         ),
     )

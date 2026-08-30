@@ -182,6 +182,15 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    # Credential-owning adapter profile that admitted the message. This is
+    # independent of ``profile``: a primary bot may route a conversation into
+    # another runtime profile, but deferred replies must still leave through
+    # the admitting bot.
+    adapter_profile: Optional[str] = None
+    # Non-authority transport used for outbound reconstruction when the
+    # logical platform differs from the live adapter (for example, Discord
+    # delivered through the process-level relay adapter).
+    delivery_transport: Optional[str] = None
     # Transport-local fail-closed signal for an explicit profile route whose
     # target is not served. Excluded from repr/equality and wire serialization.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
@@ -279,6 +288,10 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.adapter_profile:
+            d["adapter_profile"] = self.adapter_profile
+        if self.delivery_transport:
+            d["delivery_transport"] = self.delivery_transport
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -306,6 +319,8 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            adapter_profile=data.get("adapter_profile"),
+            delivery_transport=data.get("delivery_transport"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),

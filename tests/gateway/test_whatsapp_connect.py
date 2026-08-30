@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,72 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
 
     return MagicMock(return_value=_AsyncCM(mock_session))
+
+
+@pytest.mark.asyncio
+async def test_health_reconnect_publishes_deferred_readiness() -> None:
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+    adapter._running = True
+    adapter._bridge_health_connected = False
+    adapter._set_deferred_transport_ready = MagicMock()
+    adapter.notify_deferred_questions_disconnected = MagicMock()
+    response = MagicMock(status=200)
+    response.json = AsyncMock(
+        side_effect=[{"status": "connecting"}, {"status": "connected"}]
+    )
+    session = MagicMock()
+    session.get.return_value = _AsyncCM(response)
+    adapter._http_session = session
+
+    assert adapter.is_connected
+    assert not await adapter._refresh_bridge_health()
+    adapter._set_deferred_transport_ready.assert_not_called()
+
+    assert await adapter._refresh_bridge_health()
+    assert adapter.is_connected
+
+    adapter._set_deferred_transport_ready.assert_called_once_with(True)
+    adapter.notify_deferred_questions_disconnected.assert_not_called()
+
+
+def test_late_bound_service_respects_bridge_health() -> None:
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+    adapter._running = True
+    adapter._bridge_health_connected = False
+    service = MagicMock()
+
+    adapter.set_deferred_question_service(service, profile_name="work")
+
+    service.bind_adapter.assert_called_once()
+    service.adapter_connected.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bridge_503_send_is_retryable() -> None:
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+    adapter._running = True
+    adapter._bridge_health_connected = True
+    adapter.notify_deferred_questions_disconnected = MagicMock()
+    adapter._write_runtime_status_safe = MagicMock()
+    adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+    response = MagicMock(status=503)
+    response.text = AsyncMock(return_value='{"error":"Not connected to WhatsApp"}')
+    session = MagicMock()
+    session.post.return_value = _AsyncCM(response)
+    adapter._http_session = session
+
+    result = await adapter.send("15551234567", "hello")
+
+    assert not result.success
+    assert result.retryable
+    assert not adapter._bridge_health_connected
+    adapter.notify_deferred_questions_disconnected.assert_called_once_with()
 
 
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):

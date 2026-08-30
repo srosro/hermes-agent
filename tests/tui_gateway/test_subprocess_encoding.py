@@ -24,6 +24,7 @@ import tui_gateway.server as server
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
+
 def _make_completed_process() -> MagicMock:
     """A CompletedProcess-like mock with str stdout/stderr (text=True contract)."""
     cp = MagicMock()
@@ -35,16 +36,20 @@ def _make_completed_process() -> MagicMock:
 
 # ── _SlashWorker.Popen path ──────────────────────────────────────────────
 
+
 def test_slash_worker_popen_uses_utf8_replace():
     """The slash-worker subprocess.Popen must pass encoding="utf-8" and
     errors="replace" so invalid bytes in child stdout/stderr don't raise
     UnicodeDecodeError inside the drain threads (#53137).
     """
-    with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(
-            get_hermes_home=MagicMock(return_value="/tmp/hermes_test")
-        ),
-    }):
+    with patch.dict(
+        "sys.modules",
+        {
+            "hermes_constants": MagicMock(
+                get_hermes_home=MagicMock(return_value="/tmp/hermes_test")
+            ),
+        },
+    ):
         with patch("subprocess.Popen") as mock_popen:
             mock_popen.return_value.stdout = MagicMock()
             mock_popen.return_value.stderr = MagicMock()
@@ -56,8 +61,25 @@ def test_slash_worker_popen_uses_utf8_replace():
                 model="test-model",
             )
 
-            assert mock_popen.called, "Popen was not invoked"
-            kwargs = mock_popen.call_args[1]
+            # The global subprocess mock can also observe unrelated background
+            # calls. Reproduce CI's ordering instead of assuming the worker is
+            # always the final call.
+            subprocess.Popen(
+                ["background-probe"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            worker_calls = [
+                call
+                for call in mock_popen.call_args_list
+                if call.args
+                and isinstance(call.args[0], list)
+                and "tui_gateway.slash_worker" in call.args[0]
+            ]
+            assert len(worker_calls) == 1, "slash-worker Popen was not invoked once"
+            kwargs = worker_calls[0].kwargs
             assert kwargs.get("encoding") == "utf-8", (
                 f"slash-worker Popen must set encoding='utf-8' (got {kwargs.get('encoding')!r})"
             )
@@ -67,6 +89,7 @@ def test_slash_worker_popen_uses_utf8_replace():
 
 
 # ── cli.exec handler ─────────────────────────────────────────────────────
+
 
 def test_cli_exec_uses_utf8_replace():
     """The cli.exec RPC handler runs `python -m hermes_cli.main` via
@@ -88,6 +111,7 @@ def test_cli_exec_uses_utf8_replace():
 
 # ── shell.exec handler ───────────────────────────────────────────────────
 
+
 def test_shell_exec_uses_utf8_replace():
     """The shell.exec RPC handler runs an arbitrary shell command via
     subprocess.run; it must pass encoding="utf-8" and errors="replace"
@@ -95,8 +119,13 @@ def test_shell_exec_uses_utf8_replace():
     handler = server._methods["shell.exec"]
     with patch("subprocess.run", return_value=_make_completed_process()) as mock_run:
         # A harmless, non-dangerous command that passes the approval gate.
-        with patch("tools.approval.detect_hardline_command", return_value=(False, "")), \
-             patch("tools.approval.detect_dangerous_command", return_value=(False, None, "")):
+        with (
+            patch("tools.approval.detect_hardline_command", return_value=(False, "")),
+            patch(
+                "tools.approval.detect_dangerous_command",
+                return_value=(False, None, ""),
+            ),
+        ):
             resp = handler(1, {"command": "echo hello"})
         assert mock_run.called, "subprocess.run was not invoked"
         kwargs = mock_run.call_args[1]
@@ -110,17 +139,26 @@ def test_shell_exec_uses_utf8_replace():
 
 # ── quick-command exec path (via command.dispatch) ───────────────────────
 
+
 def test_quick_command_exec_uses_utf8_replace():
     """A quick_command of type 'exec' is dispatched via command.dispatch;
     the underlying subprocess.run must pass encoding="utf-8" and
     errors="replace" (#53137)."""
     handler = server._methods["command.dispatch"]
     fake_cp = _make_completed_process()
-    with patch("subprocess.run", return_value=fake_cp) as mock_run, \
-         patch("tui_gateway.server._load_cfg", return_value={
-             "quick_commands": {"runcmd": {"type": "exec", "command": "echo hi"}}
-         }), \
-         patch("tools.environments.local._sanitize_subprocess_env", return_value={"PATH": "/usr/bin"}):
+    with (
+        patch("subprocess.run", return_value=fake_cp) as mock_run,
+        patch(
+            "tui_gateway.server._load_cfg",
+            return_value={
+                "quick_commands": {"runcmd": {"type": "exec", "command": "echo hi"}}
+            },
+        ),
+        patch(
+            "tools.environments.local._sanitize_subprocess_env",
+            return_value={"PATH": "/usr/bin"},
+        ),
+    ):
         resp = handler(1, {"name": "runcmd", "arg": "", "session_id": ""})
         assert mock_run.called, "subprocess.run was not invoked for quick-command exec"
         kwargs = mock_run.call_args[1]

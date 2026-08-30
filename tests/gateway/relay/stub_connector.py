@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.transport import InboundHandler
+from gateway.relay.transport import ConnectionStateHandler, InboundHandler
 
 
 class StubConnector:
@@ -26,6 +26,7 @@ class StubConnector:
     def __init__(self, descriptor: CapabilityDescriptor) -> None:
         self._descriptor = descriptor
         self._inbound: Optional[InboundHandler] = None
+        self._connection_state_handler: Optional[ConnectionStateHandler] = None
         self._interrupt_inbound: Optional[Any] = None
         self._passthrough: Optional[Any] = None
         self.connected = False
@@ -57,16 +58,28 @@ class StubConnector:
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self.connected = True
+        self._publish_connection_state()
         return True
 
     async def disconnect(self) -> None:
         self.connected = False
+        self._publish_connection_state()
 
     async def handshake(self) -> CapabilityDescriptor:
         return self._descriptor
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
+
+    def set_connection_state_handler(
+        self, handler: ConnectionStateHandler
+    ) -> None:
+        self._connection_state_handler = handler
+        self._publish_connection_state()
+
+    def _publish_connection_state(self) -> None:
+        if self._connection_state_handler is not None:
+            self._connection_state_handler(self.connected)
 
     def set_interrupt_inbound_handler(self, handler: Any) -> None:
         """Mirror the real WS transport: the adapter registers its interrupt

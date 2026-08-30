@@ -35,7 +35,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -511,6 +511,7 @@ class WebSocketRelayTransport:
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
+        self._connection_state_handler: Optional[Callable[[bool], None]] = None
         self._descriptor: Optional[CapabilityDescriptor] = None
         # Phase 1.5 multi-platform: descriptors keyed by the underlying platform
         # (one per hello'd identity). `_descriptor` above stays the FIRST
@@ -596,6 +597,7 @@ class WebSocketRelayTransport:
                 except Exception:  # noqa: BLE001 - manifest is enrichment, never blocks the handshake
                     logger.debug("relay command manifest build failed", exc_info=True)
             await self._send(hello)
+        self._publish_connection_state(True)
 
     def _upgrade_headers(self) -> Dict[str, str]:
         """Auth headers for the WS upgrade, or {} when no secret is configured.
@@ -677,6 +679,7 @@ class WebSocketRelayTransport:
             self._pending.clear()
             if self._going_idle_ack is not None and not self._going_idle_ack.done():
                 self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
+            self._publish_connection_state(False)
 
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:
@@ -707,6 +710,24 @@ class WebSocketRelayTransport:
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
+
+    def set_connection_state_handler(
+        self, handler: Callable[[bool], None]
+    ) -> None:
+        """Publish usable-socket transitions to the owning adapter."""
+        self._connection_state_handler = handler
+        self._publish_connection_state(
+            self._ws is not None and not self._closing
+        )
+
+    def _publish_connection_state(self, connected: bool) -> None:
+        handler = getattr(self, "_connection_state_handler", None)
+        if handler is None:
+            return
+        try:
+            handler(connected)
+        except Exception:
+            logger.debug("relay connection-state handler failed", exc_info=True)
 
     # ── outbound ─────────────────────────────────────────────────────────
     async def send_outbound(
@@ -846,9 +867,17 @@ class WebSocketRelayTransport:
             # already have run, so a future registered now would never be
             # resolved or failed — the caller would block the full
             # _OUTBOUND_TIMEOUT_S for a socket that is going away. Fail fast.
-            return {"success": False, "error": "relay transport closed"}
+            return {
+                "success": False,
+                "error": "relay transport closed",
+                "retryable": True,
+            }
         if self._ws is None:
-            return {"success": False, "error": "relay transport not connected"}
+            return {
+                "success": False,
+                "error": "relay transport not connected",
+                "retryable": True,
+            }
         request_id = uuid.uuid4().hex
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Dict[str, Any]] = loop.create_future()
@@ -904,6 +933,8 @@ class WebSocketRelayTransport:
             }
             if frame_sent:
                 result["ambiguous"] = True
+            else:
+                result["retryable"] = True
             return result
         finally:
             self._pending.pop(request_id, None)
@@ -985,6 +1016,7 @@ class WebSocketRelayTransport:
             # handle during deliberate teardown, so leave it alone then.
             if self._ws is ws and not self._closing:
                 self._ws = None
+                self._publish_connection_state(False)
             # The reader is the ONLY thing that can resolve a pending
             # outbound_result future — once it exits (socket dropped, error,
             # or cancellation cleanup) every in-flight _request_response waiter
@@ -997,7 +1029,11 @@ class WebSocketRelayTransport:
             for _rid, fut in list(self._pending.items()):
                 if not fut.done():
                     fut.set_result(
-                        {"success": False, "error": "relay transport connection lost"}
+                        {
+                            "success": False,
+                            "error": "relay transport connection lost",
+                            "ambiguous": True,
+                        }
                     )
             self._pending.clear()
 

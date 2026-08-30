@@ -108,6 +108,40 @@ class TestWeComConnect:
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
+    @pytest.mark.asyncio
+    async def test_internal_reconnect_notifies_deferred_question_lifecycle(
+        self, monkeypatch
+    ):
+        import plugins.platforms.wecom.adapter as wecom_module
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        read_count = 0
+
+        async def read_events():
+            nonlocal read_count
+            read_count += 1
+            if read_count == 1:
+                raise RuntimeError("connection lost")
+            adapter._running = False
+
+        adapter._read_events = AsyncMock(side_effect=read_events)
+        adapter._open_connection = AsyncMock()
+        adapter.notify_deferred_questions_disconnected = MagicMock()
+        adapter.notify_deferred_questions_connected = MagicMock()
+        adapter._mark_connected = MagicMock(
+            side_effect=adapter.notify_deferred_questions_connected
+        )
+        monkeypatch.setattr(wecom_module.asyncio, "sleep", AsyncMock())
+
+        await adapter._listen_loop()
+
+        adapter.notify_deferred_questions_disconnected.assert_called_once_with()
+        adapter.notify_deferred_questions_connected.assert_called_once_with()
+        adapter._open_connection.assert_awaited_once_with()
+        adapter._mark_connected.assert_called_once_with()
+
 
 class TestWeComQrScan:
     @patch("plugins.platforms.wecom.adapter.time")

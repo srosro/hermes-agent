@@ -108,6 +108,102 @@ class _CaptureTransport:
         return {"success": True, "message_id": "m1"}
 
 
+@pytest.mark.asyncio
+async def test_send_preserves_transport_retryability():
+    t = _CaptureTransport()
+
+    async def unavailable(_action, *, platform=None):
+        return {
+            "success": False,
+            "error": "relay transport not connected",
+            "retryable": True,
+        }
+
+    t.send_outbound = unavailable
+    result = await RelayAdapter(
+        PlatformConfig(), make_desc(), transport=t
+    ).send("chat", "prompt")
+
+    assert not result.success
+    assert result.retryable
+
+
+@pytest.mark.asyncio
+async def test_text_sends_preserve_transport_ambiguity():
+    t = _CaptureTransport()
+
+    async def lost_ack(_action, *, platform=None):
+        return {
+            "success": False,
+            "error": "relay transport connection lost",
+            "ambiguous": True,
+        }
+
+    t.send_outbound = lost_ack
+    t._identities = [(Platform.TELEGRAM.value, "bot")]
+    adapter = RelayAdapter(PlatformConfig(), make_desc(), transport=t)
+
+    assert (await adapter.send("chat", "prompt")).ambiguous
+    assert (
+        await adapter.send_for_platform(Platform.TELEGRAM, "chat", "prompt")
+    ).ambiguous
+
+
+class _LifecycleTransport(_CaptureTransport):
+    def __init__(self, *, drop_after_handshake=False):
+        super().__init__()
+        self.connected = False
+        self.drop_after_handshake = drop_after_handshake
+
+    async def connect(self):
+        self.connected = True
+        return True
+
+    async def handshake(self):
+        if self.drop_after_handshake:
+            self.connected = False
+        return make_desc()
+
+    def set_connection_state_handler(self, handler):
+        self.connection_state_handler = handler
+        handler(self.connected)
+
+
+@pytest.mark.asyncio
+async def test_transport_reconnect_updates_adapter_readiness():
+    transport = _LifecycleTransport()
+    adapter = RelayAdapter(PlatformConfig(), make_desc(), transport=transport)
+    states = []
+    adapter._set_deferred_transport_ready = lambda ready: states.append(ready)
+
+    assert await adapter.connect()
+    assert adapter.is_connected
+    assert states == [True]
+
+    transport.connection_state_handler(False)
+    transport.connection_state_handler(True)
+
+    assert adapter.is_connected
+    assert states == [True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_connect_replays_drop_between_handshake_and_handler_install():
+    transport = _LifecycleTransport(drop_after_handshake=True)
+    adapter = RelayAdapter(PlatformConfig(), make_desc(), transport=transport)
+    states = []
+    adapter._set_deferred_transport_ready = lambda ready: states.append(ready)
+
+    assert not await adapter.connect()
+
+    assert not adapter.is_connected
+    assert states == [False]
+
+    transport.connection_state_handler(True)
+    assert adapter.is_connected
+    assert states == [False, True]
+
+
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
     from gateway.platforms.base import MessageEvent, MessageType
     from gateway.session import SessionSource

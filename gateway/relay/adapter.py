@@ -951,6 +951,13 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay handshake failed: %s", exc)
             return False
         self._apply_descriptor(descriptor)
+        set_connection_state = getattr(
+            self._transport, "set_connection_state_handler", None
+        )
+        if callable(set_connection_state):
+            set_connection_state(self._on_transport_connection_state)
+        else:
+            self._mark_connected()
         # Inbound (messages + interrupts) is delivered over the outbound WS via
         # the connector's relay bus — there is NO inbound HTTP endpoint (hosted
         # gateways have no public IP). The transport's reader already dispatches
@@ -960,7 +967,14 @@ class RelayAdapter(BasePlatformAdapter):
         # (the production WebSocket transport); the test/stub transports don't.
         if hasattr(self._transport, "auth_revoked"):
             self._start_revocation_monitor()
-        return True
+        return self.is_connected
+
+    def _on_transport_connection_state(self, connected: bool) -> None:
+        """Mirror Relay socket recovery through the adapter lifecycle seam."""
+        if connected:
+            self._mark_connected()
+        else:
+            self._mark_disconnected()
 
     def _start_revocation_monitor(self) -> None:
         """Spawn (once) the task that turns a transport auth-revocation into a
@@ -1023,6 +1037,8 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        if getattr(event, "source", None) is not None:
+            event.source.delivery_transport = "relay"
         # Inbound replay dedupe (live-canary finding #3, Alice staging): the
         # relay leg is at-least-once — on WS re-handshake the connector
         # replays its durable per-instance buffer, and a long multi-tool turn
@@ -1507,6 +1523,7 @@ class RelayAdapter(BasePlatformAdapter):
             if platform == "discord":
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
+                    event.source.delivery_transport = "relay"
                     self._capture_scope(event)
                     # Phase 3: a component press carrying a Hermes prompt token
                     # resolves its waiting primitive and is consumed (same
@@ -1768,6 +1785,8 @@ class RelayAdapter(BasePlatformAdapter):
                         "relay transport disconnect failed during drain",
                         exc_info=True,
                     )
+        if getattr(self, "_running", False):
+            self._mark_disconnected()
 
     async def go_dormant(self) -> bool:
         """Quiesce the relay for a scale-to-zero suspend (D12 / Phase 0).
@@ -1871,6 +1890,8 @@ class RelayAdapter(BasePlatformAdapter):
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
             error=result.get("error"),
+            retryable=bool(result.get("retryable")),
+            ambiguous=bool(result.get("ambiguous")),
             raw_response=result,
         )
 
@@ -2080,6 +2101,8 @@ class RelayAdapter(BasePlatformAdapter):
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
             error=result.get("error"),
+            retryable=bool(result.get("retryable")),
+            ambiguous=bool(result.get("ambiguous")),
         )
 
     def auto_thread_info_for_chat(

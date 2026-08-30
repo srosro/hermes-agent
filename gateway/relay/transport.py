@@ -30,6 +30,11 @@ from gateway.relay.descriptor import CapabilityDescriptor
 # Callback the transport invokes for each inbound normalized event.
 InboundHandler = Callable[[MessageEvent], Awaitable[None]]
 
+# Callback invoked on every usable-transport transition. Registration must
+# immediately replay the current state so adapters cannot miss a concurrent
+# disconnect between handshake completion and callback installation.
+ConnectionStateHandler = Callable[[bool], None]
+
 # Callback the transport invokes for each forwarded passthrough request (§5.1).
 # The first arg is a PassthroughForward (gateway/relay/ws_transport.py) — typed
 # as Any here to keep this protocol module free of a concrete-transport import
@@ -58,6 +63,12 @@ class RelayTransport(Protocol):
         """Register the callback invoked with each inbound MessageEvent."""
         ...
 
+    def set_connection_state_handler(
+        self, handler: "ConnectionStateHandler"
+    ) -> None:
+        """Register and immediately replay usable connection state."""
+        ...
+
     def set_passthrough_handler(self, handler: "PassthroughHandler") -> None:
         """Register the callback invoked with each forwarded passthrough request.
 
@@ -75,8 +86,10 @@ class RelayTransport(Protocol):
     ) -> Dict[str, Any]:
         """Carry an outbound action (send/edit/typing) to the connector.
 
-        Returns a result dict; for ``op == "send"`` it carries
-        ``success`` and optionally ``message_id`` / ``error``.
+        Returns a result dict; for ``op == "send"`` it carries ``success`` and
+        optionally ``message_id`` / ``error``. ``retryable=True`` means the
+        action was definitely not sent and may be retried; ``ambiguous=True``
+        means it may have reached the connector and must not be retried blindly.
 
         ``platform`` (Phase 1.5) tags WHICH fronted platform this reply targets,
         carried on the OutboundFrame envelope so a gateway fronting N platforms

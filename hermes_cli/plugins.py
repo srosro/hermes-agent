@@ -1464,6 +1464,7 @@ class PluginContext:
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
         self._subagent_lifecycle: Any = None
+        self._deferred_questions: Any = None
         self._state: PluginState | None = None
         # Lazy-built capability-gated platform action facade (#64176).
         self._platform_actions: Any = None
@@ -1673,6 +1674,25 @@ class PluginContext:
                 get_active_subagent_parent
             )
         return self._subagent_lifecycle
+
+    @property
+    def deferred_questions(self) -> Any:
+        """Return the plugin-scoped durable gateway-question facade."""
+        if self._deferred_questions is None:
+            from gateway.deferred_questions import (
+                DeferredQuestionClient,
+                get_deferred_question_service,
+            )
+
+            plugin_id = self.manifest.key or self.manifest.name
+            self._deferred_questions = DeferredQuestionClient(
+                get_deferred_question_service(),
+                plugin_id,
+                track_registration=lambda key, release: self._track(
+                    "deferred_question_handler", key, release
+                ),
+            )
+        return self._deferred_questions
 
     # -- profile awareness --------------------------------------------------
 

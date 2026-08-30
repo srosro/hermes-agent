@@ -21,6 +21,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -2602,6 +2603,10 @@ class SendResult:
     # stream consumer can send the missing tail instead of marking a clipped
     # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # True when a non-idempotent send may have reached the provider but its
+    # acknowledgement was lost. Retrying or formatting-fallback would risk a
+    # duplicate, so _send_with_retry returns these failures unchanged.
+    ambiguous: bool = False
     # Server-requested retry delay in seconds (e.g. Telegram FloodWait retry_after).
     # When present, _send_with_retry() honors this instead of its default backoff.
     retry_after: Optional[float] = None
@@ -3032,6 +3037,7 @@ class BasePlatformAdapter(ABC):
     # first code line).  Plain-text platforms fall back to the short truncated
     # preview (see gateway/run.py progress_callback).
     supports_code_blocks: bool = False
+    _deferred_question_service = None
 
     # Whether this adapter's typing indicator renders TEXT (a status line
     # next to the bot name) rather than a native textless bubble. When True,
@@ -3137,6 +3143,8 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._deferred_question_service = None
+        self._deferred_question_services: Dict[str, Any] = {}
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
         self._reaction_handler: Optional[
@@ -3179,6 +3187,9 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Concurrent webhook tasks share session-idle delivery so none can
+        # reacquire a released guard before its deferred callback finishes.
+        self._session_idle_handoffs: Dict[str, asyncio.Task[None]] = {}
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -3205,6 +3216,10 @@ class BasePlatformAdapter(ABC):
         # deliveries generation-aware and avoid stale runs clearing callbacks
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
+        # Deferred plugin prompts wait for the session guard to be genuinely
+        # absent, including queued-turn handoffs. Post-delivery callbacks run
+        # earlier while the guard is intentionally still live.
+        self._session_idle_callbacks: Dict[str, Callable] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Owning profile for a multiplexed secondary adapter, installed by
@@ -3570,15 +3585,18 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message = None
         self._fatal_error_retryable = True
         self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+        self.notify_deferred_questions_connected()
 
     def _mark_disconnected(self) -> None:
         self._running = False
+        self.notify_deferred_questions_disconnected()
         if self.has_fatal_error:
             return
         self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
+        self.notify_deferred_questions_disconnected()
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
@@ -3810,6 +3828,99 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+        from gateway.deferred_questions import get_deferred_question_service
+
+        self.set_deferred_question_service(get_deferred_question_service())
+
+    def set_deferred_question_service(
+        self, service: Any, *, profile_name: Optional[str] = None
+    ) -> None:
+        """Register this adapter without waking work before it connects."""
+        profile = (profile_name or "").strip()
+        services = getattr(self, "_deferred_question_services", None)
+        if not isinstance(services, dict):
+            services = {}
+            self._deferred_question_services = services
+        services[profile] = service
+        if not profile:
+            self._deferred_question_service = service
+        platform_name = getattr(self.platform, "value", str(self.platform))
+        adapter_profile = getattr(self, "_owner_profile", None) or "default"
+        service.bind_adapter(
+            platform_name,
+            self,
+            adapter_profile=adapter_profile,
+        )
+        if self.is_connected:
+            self.notify_deferred_questions_connected()
+
+    def notify_deferred_questions_connected(self) -> None:
+        """Wake durable plugin work after the transport is usable."""
+        if not self.is_connected:
+            return
+        self._set_deferred_transport_ready(True)
+
+    def notify_deferred_questions_disconnected(self) -> None:
+        self._set_deferred_transport_ready(False)
+
+    def _set_deferred_transport_ready(self, ready: bool) -> None:
+        """Publish every transport transition through one durable-work seam."""
+        services = getattr(self, "_deferred_question_services", None)
+        services = dict(services) if isinstance(services, dict) else {}
+        service = getattr(self, "_deferred_question_service", None)
+        if service is not None and all(
+            registered is not service for registered in services.values()
+        ):
+            services[""] = service
+        if not services:
+            return
+        platform_name = getattr(self.platform, "value", str(self.platform))
+        adapter_profile = getattr(self, "_owner_profile", None) or "default"
+        seen: set[int] = set()
+        for service in services.values():
+            if id(service) in seen:
+                continue
+            seen.add(id(service))
+            transition = (
+                service.adapter_connected if ready else service.adapter_disconnected
+            )
+            transition(
+                platform_name,
+                self,
+                adapter_profile=adapter_profile,
+            )
+
+    def register_session_idle_callback(
+        self, session_key: str, callback: Callable
+    ) -> None:
+        """Run callbacks only after the session guard is truly released."""
+        if not session_key or not callable(callback):
+            return
+        previous = self._session_idle_callbacks.get(session_key)
+        if previous is None:
+            self._session_idle_callbacks[session_key] = callback
+            return
+
+        async def chained() -> None:
+            for item in (previous, callback):
+                await self._run_session_idle_callback(item)
+
+        self._session_idle_callbacks[session_key] = chained
+
+    async def _run_session_idle_callback(self, callback: Callable) -> None:
+        """Run one post-guard callback without disrupting session cleanup."""
+        try:
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[%s] Session-idle callback failed", self.name)
+
+    def is_session_active(self, session_key: str) -> bool:
+        """Return whether this adapter currently owns a run for ``session_key``."""
+        return session_key in self._active_sessions
 
     def set_platform_event_handler(
         self,
@@ -5727,6 +5838,9 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        if result.ambiguous:
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -5760,10 +5874,15 @@ class BasePlatformAdapter(ABC):
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
+                if result.ambiguous:
+                    return result
                 error_str = result.error or ""
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
-                if not (result.retryable or self._is_retryable_error(error_str)):
+                is_network = result.retryable or self._is_retryable_error(error_str)
+                if not is_network and self._is_timeout_error(error_str):
+                    return result
+                if not is_network:
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
                 # All retries exhausted (loop completed without break) — notify user
@@ -5789,6 +5908,35 @@ class BasePlatformAdapter(ABC):
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
+
+    async def deliver_deferred_message(
+        self, delivery_source: dict[str, object], content: str
+    ) -> "SendResult":
+        """Deliver durable plugin output through the canonical adapter policy."""
+        from gateway.session import SessionSource
+
+        source = SessionSource.from_dict(delivery_source)
+        delivery_adapter = self
+        if getattr(source, "delivery_transport", None) == "relay":
+            prime = getattr(delivery_adapter, "prime_routing_cache", None)
+            if callable(prime):
+                prime(SimpleNamespace(source=source))
+        reply_to = getattr(source, "message_id", None)
+        if (
+            _platform_name(source.platform) == "telegram"
+            and source.thread_id
+            and source.chat_type != "dm"
+        ):
+            reply_to = None
+        metadata = _mark_notify_metadata(
+            _thread_metadata_for_source(source, reply_to_message_id=reply_to)
+        )
+        return await delivery_adapter._send_with_retry(
+            source.chat_id,
+            content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
@@ -5988,6 +6136,19 @@ class BasePlatformAdapter(ABC):
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        callback = self._session_idle_callbacks.pop(session_key, None)
+        if callable(callback):
+            task = asyncio.create_task(self._run_session_idle_callback(callback))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            self._session_idle_handoff_store()[session_key] = task
+
+    def _session_idle_handoff_store(self) -> Dict[str, asyncio.Task[None]]:
+        """Return the handoff map, including for lightweight test adapters."""
+        handoffs = getattr(self, "_session_idle_handoffs", None)
+        if handoffs is None:
+            handoffs = self._session_idle_handoffs = {}
+        return handoffs
 
     def _session_task_is_stale(self, session_key: str) -> bool:
         """Return True if the owner task for ``session_key`` is done/cancelled.
@@ -6027,11 +6188,23 @@ class BasePlatformAdapter(ABC):
             self.name,
             session_key,
         )
-        self._active_sessions.pop(session_key, None)
+        self._release_session_guard(session_key)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
+
+    async def _await_session_idle_handoff(self, session_key: str) -> None:
+        """Wait for the callback attached to the latest guard release."""
+        handoffs = self._session_idle_handoff_store()
+        handoff = handoffs.get(session_key)
+        if handoff is None:
+            return
+        try:
+            await asyncio.shield(handoff)
+        finally:
+            if handoff.done() and handoffs.get(session_key) is handoff:
+                handoffs.pop(session_key, None)
 
     def _start_session_processing(
         self,
@@ -6222,6 +6395,12 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
+        # Persist credential ownership separately from routed runtime profile.
+        # Always overwrite wire input: this is transport authority, not peer data.
+        event.source.adapter_profile = (
+            getattr(self, "_owner_profile", None) or "default"
+        )
+
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
 
@@ -6253,13 +6432,80 @@ class BasePlatformAdapter(ABC):
             )
             return
 
-        # On-entry self-heal: if the adapter still has an _active_sessions
-        # entry for this key but the owner task has already exited (done or
-        # cancelled), the lock is stale.  Clear it and fall through to
-        # normal dispatch so the user isn't trapped behind a dead guard —
-        # this is the split-brain tail described in issue #11016.
+        # Finish any guard-release delivery before classifying this message.
+        # A prompt is externally visible before its send coroutine returns;
+        # waiting here ensures a fast reply observes the resulting `awaiting`
+        # row instead of slipping into an ordinary agent turn.
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
+        await self._await_session_idle_handoff(session_key)
+
+        # A deferred question owns the next non-command reply in this session.
+        # Resolve it before the active-session guard so an answer cannot become
+        # an out-of-band correction to unrelated work that started after the
+        # question was delivered. Slash commands remain commands and leave the
+        # question pending.
+        deferred_services = getattr(self, "_deferred_question_services", None)
+        profile = str(getattr(event.source, "profile", None) or "").strip()
+        deferred_service = (
+            deferred_services.get(profile)
+            if isinstance(deferred_services, dict)
+            else None
+        )
+        if deferred_service is None:
+            deferred_service = getattr(self, "_deferred_question_service", None)
+        pending_deferred = (
+            deferred_service.pending_for_session(
+                session_key,
+                adapter_profile=event.source.adapter_profile,
+            )
+            if deferred_service is not None and not event.get_command()
+            else None
+        )
+        if pending_deferred is not None and pending_deferred.state == "awaiting":
+            authorized = self._is_sender_authorized(
+                event.source.user_id,
+                event.source.chat_type,
+                event.source.chat_id,
+            )
+            if authorized is not True:
+                return
+            expected_sender = str(
+                pending_deferred.delivery_source.get("user_id_alt")
+                or pending_deferred.delivery_source.get("user_id")
+                or ""
+            ).strip()
+            actual_sender = str(
+                getattr(event.source, "user_id_alt", None)
+                or getattr(event.source, "user_id", None)
+                or ""
+            ).strip()
+            origin_chat_type = str(
+                pending_deferred.delivery_source.get("chat_type") or "dm"
+            ).strip()
+            if origin_chat_type != "dm" and not expected_sender:
+                return
+            if expected_sender and actual_sender != expected_sender:
+                return
+            if deferred_service.has_handler(
+                pending_deferred.plugin_id, pending_deferred.handler_name
+            ):
+                try:
+                    deferred_result = await deferred_service.handle_response(
+                        session_key, event.text or ""
+                    )
+                except Exception:
+                    logger.error(
+                        "[%s] Deferred-question handler failed for %s",
+                        self.name,
+                        session_key,
+                        exc_info=True,
+                    )
+                    return
+                if deferred_result is not None:
+                    return
+            else:
+                deferred_service.park_awaiting(pending_deferred.id)
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
@@ -7297,6 +7543,7 @@ class BasePlatformAdapter(ABC):
             pass
         self._pending_messages.clear()
         self._active_sessions.clear()
+        self._session_idle_callbacks.clear()
         for state in list(self._text_debounce_store().values()):
             if state.task is not None and not state.task.done():
                 state.task.cancel()

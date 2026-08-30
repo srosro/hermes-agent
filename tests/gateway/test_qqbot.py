@@ -40,6 +40,20 @@ class TestQQAdapterInit:
         from gateway.platforms.qqbot import QQAdapter
         return QQAdapter(_make_config(**extra))
 
+    def test_transport_disconnect_marks_deferred_work_not_ready(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        service = mock.MagicMock()
+        adapter._deferred_question_service = service
+        adapter._write_runtime_status_safe = mock.MagicMock()
+
+        adapter._mark_transport_disconnected()
+
+        service.adapter_disconnected.assert_called_once_with(
+            "qqbot", adapter, adapter_profile="default"
+        )
+
 
     def test_env_fallback(self):
         with mock.patch.dict(os.environ, {"QQ_APP_ID": "env_id", "QQ_CLIENT_SECRET": "env_sec"}, clear=False):
@@ -1270,4 +1284,3 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = SimpleNamespace(closed=True)
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
-

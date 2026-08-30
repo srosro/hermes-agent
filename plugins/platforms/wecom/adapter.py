@@ -785,6 +785,7 @@ class WeComAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if not self._running:
                     return
+                self.notify_deferred_questions_disconnected()
                 logger.warning("[%s] WebSocket error: %s", self.name, exc)
                 self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
                 self._fail_reply_queues(RuntimeError("WeCom connection interrupted"))

@@ -209,6 +209,7 @@ class QQAdapter(BasePlatformAdapter):
         transient transport drops so it can continue reconnect attempts after a
         short-lived gateway or network failure.
         """
+        self.notify_deferred_questions_disconnected()
         if self.has_fatal_error:
             return
         self._write_runtime_status_safe(
