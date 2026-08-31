@@ -136,3 +136,33 @@ def test_slack_handoff_key_matches_organic_thread_reply_key():
     scoped = _handoff_key(Platform.SLACK, channel_id, thread_ts, scope_id="T_TEAM")
     assert "T_TEAM" in scoped.split(":"), scoped
     assert scoped != handoff
+
+
+def test_slack_handoff_key_matches_organic_under_per_user_threads():
+    """Under thread_sessions_per_user the organic key carries the
+    participant, and _process_handoff substitutes the home channel's
+    authenticated user for the system:handoff placeholder — the keys must
+    still be byte-identical."""
+    channel_id = "C12345678"
+    thread_ts = "1690000000.123456"
+    user_id = "U123456"
+
+    organic_source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id=channel_id,
+        chat_type="group",
+        user_id=user_id,
+        thread_id=thread_ts,
+    )
+    organic = build_session_key(organic_source, thread_sessions_per_user=True)
+    handoff_source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id=channel_id,
+        chat_type="group",
+        user_id=user_id,  # home.user_id substitution in _process_handoff
+        user_name="Handoff",
+        thread_id=thread_ts,
+    )
+    handoff = build_session_key(handoff_source, thread_sessions_per_user=True)
+    assert handoff == organic
+    assert organic.endswith(f":{user_id}")
