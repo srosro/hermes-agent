@@ -3389,11 +3389,12 @@ class RelayAdapter(BasePlatformAdapter):
         if self._transport is not None:
             resolver = getattr(self._transport, "descriptor_for_platform", None)
             if callable(resolver):
-                # Fail-closed for an explicit lane (same policy as the
-                # per-platform capability reads elsewhere in this adapter): a
-                # resolver that knows the lanes and holds none for this
-                # platform means no negotiated capabilities — never borrow
-                # the primary identity's descriptor.
+                # Deliberately stricter than the other per-platform descriptor
+                # reads in this adapter (which fall back to the primary's for
+                # graceful degradation of cosmetic capabilities): here the
+                # answer decides SESSION IDENTITY, so a resolver that knows
+                # the lanes and holds none for this platform means no
+                # negotiated capabilities — never borrow the primary's.
                 try:
                     descriptor = resolver(platform.value)
                 except Exception:  # noqa: BLE001 - capability lookup must never break a handoff
