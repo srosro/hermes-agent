@@ -1289,6 +1289,14 @@ class SessionStore:
         self._transcript_append_failures: Dict[str, int] = {}
         self._fts_rebuild_attempted = False
         self._has_active_processes_fn = has_active_processes_fn
+        # Per-platform session-scope overrides, registered from each adapter's
+        # resolved ``config.extra`` at creation time (run.py ``_create_adapter``).
+        # Without this, an adapter that overrides ``group_sessions_per_user`` in
+        # its extra (custom gateway plugins do) gets one key shape from
+        # ``BasePlatformAdapter.handle_message`` and a different one from this
+        # store's routing — the split that delivered one group chat's messages
+        # into per-sender sessions.
+        self._platform_session_scope: Dict[str, tuple[bool, bool]] = {}
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
         # backward compatibility; disable via gateway.write_sessions_json.
@@ -2007,12 +2015,51 @@ class SessionStore:
 
         return recovered_profile == self._active_profile_name()
 
+    def register_platform_session_scope(
+        self,
+        platform: str,
+        *,
+        group_sessions_per_user: bool,
+        thread_sessions_per_user: bool,
+    ) -> None:
+        """Record a platform adapter's resolved session-scope flags.
+
+        Called once per adapter at creation with the final values of its
+        ``config.extra`` (gateway config seeds those via ``setdefault``, so an
+        adapter that doesn't override inherits the gateway values). This makes
+        the store — the owner of routing keys — agree with the adapter about
+        key shape for that platform's sources.
+        """
+        self._platform_session_scope[platform] = (
+            bool(group_sessions_per_user),
+            bool(thread_sessions_per_user),
+        )
+
+    def resolve_session_scope(self, source: SessionSource) -> tuple[bool, bool]:
+        """(group_sessions_per_user, thread_sessions_per_user) for a source.
+
+        The single resolution order for session scoping: the source platform's
+        registered adapter scope, else the gateway config. Every key
+        derivation and every guard that must stay in lock-step with key shape
+        (``is_shared_multi_user_session`` callers) resolves through here.
+        """
+        scope = self._platform_session_scope.get(
+            getattr(source.platform, "value", str(source.platform))
+        )
+        if scope is not None:
+            return scope
+        return (
+            getattr(self.config, "group_sessions_per_user", True),
+            getattr(self.config, "thread_sessions_per_user", False),
+        )
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_per_user, thread_per_user = self.resolve_session_scope(source)
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
             profile=self._resolve_profile_for_key(source),
         )
 
@@ -2027,14 +2074,11 @@ class SessionStore:
         if source.platform != Platform.SLACK or not source.scope_id:
             return None
         legacy_source = replace(source, scope_id=None, guild_id=None)
+        group_per_user, thread_per_user = self.resolve_session_scope(source)
         return build_session_key(
             legacy_source,
-            group_sessions_per_user=getattr(
-                self.config, "group_sessions_per_user", True
-            ),
-            thread_sessions_per_user=getattr(
-                self.config, "thread_sessions_per_user", False
-            ),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
             profile=self._resolve_profile_for_key(source),
         )
 

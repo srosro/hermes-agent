@@ -700,6 +700,42 @@ class TestWhatsAppSessionKeyConsistency:
         assert second_entry.session_key == "agent:main:discord:group:guild-123"
         assert first_entry.session_id == second_entry.session_id
 
+    def test_registered_platform_scope_overrides_gateway_config(self, store):
+        """An adapter that sets ``group_sessions_per_user: False`` in its
+        ``config.extra`` (custom gateway plugins do) must get the shared
+        per-chat key from the store too, even when the gateway config keeps
+        the per-user default. Before the store honored registered platform
+        scope, the adapter guarded on the shared key while routing keyed per
+        sender — one visible group chat split into per-person sessions, and a
+        reply answered a different participant's context."""
+        assert store.config.group_sessions_per_user is True
+        store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+        )
+
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        bob = replace(alice, user_id="bob", user_name="Bob")
+
+        assert (
+            store._generate_session_key(alice)
+            == store._generate_session_key(bob)
+            == "agent:main:discord:group:guild-123"
+        )
+        # An unregistered platform still follows the gateway config.
+        telegram = replace(alice, platform=Platform.TELEGRAM)
+        assert (
+            store._generate_session_key(telegram)
+            == "agent:main:telegram:group:guild-123:alice"
+        )
+
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(

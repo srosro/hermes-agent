@@ -16748,8 +16748,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
 
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
+        config: Any,
+    ) -> Optional[BasePlatformAdapter]:
+        """Create an adapter, then register its session scope with the store.
+
+        The registration reads the adapter's post-``__init__`` ``config.extra``
+        (plugins override ``group_sessions_per_user`` there), so the session
+        store — which owns routing keys — derives the same key shape for this
+        platform's sources as the adapter itself does in ``handle_message``.
+        Before this, the two disagreed for any extra-overriding platform, and
+        a group chat's messages routed into per-sender sessions while the
+        adapter guarded on the shared key.
+        """
+        adapter = self._build_adapter(platform, config)
+        if adapter is not None:
+            extra = getattr(getattr(adapter, "config", None), "extra", None)
+            store = getattr(self, "session_store", None)
+            if store is not None and isinstance(extra, dict):
+                store.register_platform_session_scope(
+                    platform.value,
+                    group_sessions_per_user=extra.get(
+                        "group_sessions_per_user",
+                        getattr(self.config, "group_sessions_per_user", True),
+                    ),
+                    thread_sessions_per_user=extra.get(
+                        "thread_sessions_per_user",
+                        getattr(self.config, "thread_sessions_per_user", False),
+                    ),
+                )
+        return adapter
+
+    def _build_adapter(
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
@@ -19031,8 +19064,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_stt_prepared
             else event.text
         ) or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        # Resolve through the store so sender attribution stays in lock-step
+        # with the key shape for platforms that override scope in their extra.
+        _store = getattr(self, "session_store", None)
+        if _store is not None:
+            _group_sessions_per_user, _thread_sessions_per_user = _store.resolve_session_scope(source)
+        else:
+            _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
+            _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.

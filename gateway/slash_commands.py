@@ -1069,10 +1069,11 @@ class GatewaySlashCommandsMixin:
         # Non-DM: scope by participant whenever the session key for this source
         # is per-user. is_shared_multi_user_session mirrors build_session_key's
         # isolation rules exactly, so the guard stays in lock-step with the key.
+        _group_per_user, _thread_per_user = self.session_store.resolve_session_scope(current)
         shared = is_shared_multi_user_session(
             current,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=_group_per_user,
+            thread_sessions_per_user=_thread_per_user,
         )
         if shared:
             return True
@@ -1224,10 +1225,11 @@ class GatewaySlashCommandsMixin:
             # do NOT also require user-id equality (otherwise a co-member is
             # wrongly blocked from their own shared session). A per-user session
             # still requires the same owner.
+            _group_per_user, _thread_per_user = self.session_store.resolve_session_scope(source)
             shared = is_shared_multi_user_session(
                 source,
-                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+                group_sessions_per_user=_group_per_user,
+                thread_sessions_per_user=_thread_per_user,
             )
             if shared:
                 return True
