@@ -3804,8 +3804,6 @@ class TelegramAdapter(BasePlatformAdapter):
         ``thread_id``, the shape organic group messages arrive with; a
         generic ``"thread"`` key would strand the handed-off transcript.
         """
-        from gateway.delivery import looks_like_telegram_private_chat_id
-
         source = await super().build_handoff_dest_source(
             platform=platform,
             home=home,
@@ -3813,12 +3811,7 @@ class TelegramAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
-        home_chat_id = str(home.chat_id)
-        if looks_like_telegram_private_chat_id(home_chat_id):
-            source.chat_type = "dm"
-            source.user_id = home_chat_id
-        elif effective_thread_id:
-            source.chat_type = "group"
+        self.apply_telegram_handoff_shape(source, home, effective_thread_id)
         return source
 
     async def create_handoff_thread(

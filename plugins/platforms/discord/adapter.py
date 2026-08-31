@@ -7370,10 +7370,7 @@ class DiscordAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
-        if effective_thread_id:
-            source.chat_type = "thread"
-            source.chat_id = str(effective_thread_id)
-            source.user_id = "system:handoff"
+        self.apply_discord_handoff_shape(source, effective_thread_id)
         return source
 
     async def create_handoff_thread(

@@ -3369,13 +3369,13 @@ class RelayAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
-        if self._transport is None:
-            return source
-        resolver = getattr(self._transport, "descriptor_for_platform", None)
-        descriptor = (
-            resolver(platform.value) if callable(resolver) else None
-        ) or self.descriptor
-        if descriptor.supports_op("get_chat_info"):
+        descriptor = None
+        if self._transport is not None:
+            resolver = getattr(self._transport, "descriptor_for_platform", None)
+            descriptor = (
+                resolver(platform.value) if callable(resolver) else None
+            ) or self.descriptor
+        if descriptor is not None and descriptor.supports_op("get_chat_info"):
             info: Dict[str, Any] = {}
             try:
                 info = await self._transport.get_chat_info(
@@ -3389,6 +3389,19 @@ class RelayAdapter(BasePlatformAdapter):
                 )
             if info.get("type") in ("dm", "group"):
                 source.chat_type = info["type"]
+        # Logical-platform shape normalization: the relay fronts platforms
+        # whose native overrides can't run here (sibling classes, and plugin
+        # adapters may not even be importable in a relay-only deployment), so
+        # the shared shape helpers apply the same key shapes the native
+        # adapters do.
+        if platform == Platform.DISCORD:
+            self.apply_discord_handoff_shape(source, effective_thread_id)
+        elif platform == Platform.TELEGRAM:
+            self.apply_telegram_handoff_shape(source, home, effective_thread_id)
+        elif platform == Platform.SLACK:
+            self.apply_handoff_participant(
+                source, home, self._session_store.resolve_session_scope(source)[1]
+            )
         return source
 
     async def create_handoff_thread(

@@ -202,6 +202,48 @@ def test_slack_per_user_threads_honor_the_gateway_level_flag():
     assert dest.user_id == "U123456"
 
 
+def test_slack_substitution_reads_scope_through_the_transport_ref(tmp_path):
+    """The REAL resolver reads this adapter's extra through the weakref the
+    base hook stamps — pinning the wiring the mutate-in-place overrides
+    depend on (a gateway config saying shared threads must lose to the
+    adapter's own thread_sessions_per_user)."""
+    from unittest.mock import patch
+
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    extra = {"group_sessions_per_user": True, "thread_sessions_per_user": True}
+    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=extra)
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    store._db = None
+    store._loaded = True
+    adapter._session_store = store
+
+    dest = _dest(
+        adapter,
+        Platform.SLACK,
+        _home(Platform.SLACK, "C12345678", user_id="U123456"),
+        "1690000000.123456",
+    )
+    assert dest.user_id == "U123456"
+
+
+def test_relay_fronted_discord_thread_keys_like_native():
+    """A relay-fronted Discord home must key threads on the thread's own id
+    like the native adapter — the relay applies the shared shape helpers for
+    its logical lanes (its class never reaches sibling overrides)."""
+    from gateway.relay.adapter import RelayAdapter
+
+    a = RelayAdapter.__new__(RelayAdapter)
+    a._transport = None
+    dest = _dest(a, Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
+    assert dest.chat_type == "thread"
+    assert dest.chat_id == "T9"
+    native = _dest(_discord_adapter(), Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
+    assert build_session_key(dest) == build_session_key(native)
+
+
 def test_telegram_private_chat_topic_keys_as_dm_topic():
     """A handoff-created topic in a private chat must use the DM-topic source
     shape (real user id == chat id) so the user's next message shares it."""

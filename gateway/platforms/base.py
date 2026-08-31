@@ -4205,6 +4205,47 @@ class BasePlatformAdapter(ABC):
         """
         return None
 
+    @staticmethod
+    def apply_discord_handoff_shape(source: "SessionSource", effective_thread_id: Optional[str]) -> None:
+        """Discord threads key on the thread's OWN id (organic in-thread
+        messages carry ``chat_id == thread id``). Shared by the native
+        Discord override and the relay's Discord lane — module-level so the
+        relay never has to import plugin adapters."""
+        if effective_thread_id:
+            source.chat_type = "thread"
+            source.chat_id = str(effective_thread_id)
+            source.user_id = "system:handoff"
+
+    @staticmethod
+    def apply_telegram_handoff_shape(source: "SessionSource", home: Any, effective_thread_id: Optional[str]) -> None:
+        """Telegram private-chat topics key as DM topics with the real user
+        id; forum/supergroup topics key ``"group"`` like organic replies.
+        Shared by the native Telegram override and the relay's lane."""
+        from gateway.delivery import looks_like_telegram_private_chat_id
+
+        home_chat_id = str(home.chat_id)
+        if looks_like_telegram_private_chat_id(home_chat_id):
+            source.chat_type = "dm"
+            source.user_id = home_chat_id
+        elif effective_thread_id:
+            source.chat_type = "group"
+
+    @staticmethod
+    def apply_handoff_participant(source: "SessionSource", home: Any, thread_per_user: bool) -> None:
+        """Under per-user thread isolation the home channel's authenticated
+        user keys the participant — a ``system:handoff`` placeholder binds a
+        key no real reply carries. Fails loudly when the home never recorded
+        one. Shared by the Slack override and the relay's Slack lane."""
+        if source.chat_type == "dm" or not source.thread_id or not thread_per_user:
+            return
+        if not getattr(home, "user_id", None):
+            raise RuntimeError(
+                "thread handoff under thread_sessions_per_user requires the "
+                "home channel's user_id to key the participant — re-run "
+                "/sethome from the target thread"
+            )
+        source.user_id = str(home.user_id)
+
     async def build_handoff_dest_source(
         self,
         *,

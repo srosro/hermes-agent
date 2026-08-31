@@ -2545,18 +2545,12 @@ class SlackAdapter(BasePlatformAdapter):
         source.scope_id = (
             getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
         )
-        if (
-            dest_chat_type != "dm"
-            and effective_thread_id
-            and self._session_store.resolve_session_scope(source)[1]
-        ):
-            if not getattr(home, "user_id", None):
-                raise RuntimeError(
-                    "Slack thread handoff under thread_sessions_per_user "
-                    "requires the home channel's user_id to key the "
-                    "participant — re-run /sethome from the target thread"
-                )
-            source.user_id = str(home.user_id)
+        # _session_store is a hard precondition here (wired by set_session_store
+        # right after construction in the gateway lifecycle) — consistent with
+        # the fail-fast RuntimeError inside the substitution itself.
+        self.apply_handoff_participant(
+            source, home, self._session_store.resolve_session_scope(source)[1]
+        )
         return source
 
     async def create_handoff_thread(
