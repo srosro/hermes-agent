@@ -147,6 +147,41 @@ def test_slack_dm_home_handoff_keys_as_dm():
     assert build_session_key(dest) == build_session_key(organic)
 
 
+def test_slack_lookup_failure_preserves_no_thread_dm_type():
+    """A transient get_chat_info failure must not flip a no-thread DM-fallback
+    destination to "group" — the pre-computed chat type survives; only a
+    thread-created destination normalizes to "group"."""
+    import asyncio
+
+    from gateway.config import HomeChannel
+    from gateway.run import GatewayRunner
+
+    class _FailingAdapter:
+        async def get_chat_info(self, chat_id):
+            raise RuntimeError("slack api down")
+
+        def scope_id_for_chat(self, chat_id):
+            return None
+
+    runner = object.__new__(GatewayRunner)
+    home = HomeChannel(platform=Platform.SLACK, chat_id="D0DMDMDM", name="dm home")
+
+    async def _build(new_thread_id):
+        return await runner._build_handoff_dest_source(
+            platform=Platform.SLACK,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=new_thread_id or "1690000000.123456",
+            profile_name=None,
+            adapter=_FailingAdapter(),
+        )
+
+    no_thread = asyncio.run(_build(None))
+    assert no_thread.chat_type == "dm"
+    threaded = asyncio.run(_build("1690000000.123456"))
+    assert threaded.chat_type == "group"
+
+
 def test_discord_handoff_key_matches_organic_in_thread_key():
     """For Discord, the handoff key must be byte-identical to the organic
     in-thread key — otherwise a reply in the handoff thread spawns a new session."""
