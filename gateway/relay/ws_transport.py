@@ -739,10 +739,15 @@ class WebSocketRelayTransport:
                 return b
         return None
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        result = await self._request_response(
-            {"op": "get_chat_info", "chat_id": chat_id}, frame_type="outbound"
-        )
+    async def get_chat_info(
+        self, chat_id: str, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        op: Dict[str, Any] = {"op": "get_chat_info", "chat_id": chat_id}
+        # Multi-platform relays: tag the logical lane so the connector answers
+        # from the right platform's connection instead of the primary's.
+        if platform:
+            op["platform"] = platform
+        result = await self._request_response(op, frame_type="outbound")
         # The connector answers chat-info inside the outbound_result envelope.
         info = result.get("chat_info") or result
         return {"name": info.get("name", chat_id), "type": info.get("type", "dm")}

@@ -639,15 +639,17 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
         name="Tester DM",
     )
     adapter = runner.adapters[Platform.TELEGRAM]
-    # The real Telegram hook, bound to the mock — the DM-topic lane under
-    # test IS this override's private-chat branch.
-    import types as _types
-
+    # The real Telegram hook — the DM-topic lane under test IS this
+    # override's private-chat branch. Bound to a bare real instance because
+    # the override's zero-arg super() requires a TelegramAdapter self.
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
-    adapter.build_handoff_dest_source = _types.MethodType(
-        TelegramAdapter.build_handoff_dest_source, adapter
-    )
+    _real_tg = TelegramAdapter.__new__(TelegramAdapter)
+
+    async def _build_dest(**kwargs):
+        return await TelegramAdapter.build_handoff_dest_source(_real_tg, **kwargs)
+
+    adapter.build_handoff_dest_source = _build_dest
     adapter.create_handoff_thread = AsyncMock(return_value="17585")
     adapter.send.return_value = SimpleNamespace(success=True)
     captured = {}

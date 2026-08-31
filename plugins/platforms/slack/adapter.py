@@ -2515,15 +2515,19 @@ class SlackAdapter(BasePlatformAdapter):
         thread/no-thread intent is preserved (a no-thread DM fallback stays
         ``"dm"``), logged at warning since this lookup is what keys IM homes
         correctly. Legacy env-only homes that recorded no workspace recover it
-        from the adapter's scope map. Under per-user thread isolation the
-        home channel's authenticated user keys the participant — a
-        ``system:handoff`` placeholder would bind a key no real reply
-        carries — and its absence fails loudly.
+        from the adapter's scope map. Under per-user thread isolation —
+        resolved through the store's canonical scope resolver, the one
+        precedence implementation — the home channel's authenticated user
+        keys the participant; a ``system:handoff`` placeholder would bind a
+        key no real reply carries, and its absence fails loudly.
         """
-        import weakref
-
-        from gateway.session import SessionSource
-
+        source = await super().build_handoff_dest_source(
+            platform=platform,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=effective_thread_id,
+            profile_name=profile_name,
+        )
         home_chat_id = str(home.chat_id)
         dest_chat_type = "group" if new_thread_id else "dm"
         info: Dict[str, Any] = {}
@@ -2537,21 +2541,14 @@ class SlackAdapter(BasePlatformAdapter):
             )
         if info.get("type") in ("dm", "group"):
             dest_chat_type = info["type"]
-
-        scope_id = getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
-        user_id = "system:handoff"
-        # Fallback-aware like _create_adapter's seeding: extra when it carries
-        # the key (gateway-created adapters are always seeded), else the
-        # gateway config via the wired store — a deployment setting the flag
-        # only at gateway level must still substitute the participant.
-        _thread_per_user = self.config.extra.get("thread_sessions_per_user")
-        if _thread_per_user is None:
-            _store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
-            _thread_per_user = getattr(_store_cfg, "thread_sessions_per_user", False)
+        source.chat_type = dest_chat_type
+        source.scope_id = (
+            getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
+        )
         if (
             dest_chat_type != "dm"
             and effective_thread_id
-            and _thread_per_user
+            and self._session_store.resolve_session_scope(source)[1]
         ):
             if not getattr(home, "user_id", None):
                 raise RuntimeError(
@@ -2559,20 +2556,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "requires the home channel's user_id to key the "
                     "participant — re-run /sethome from the target thread"
                 )
-            user_id = str(home.user_id)
-
-        source = SessionSource(
-            platform=platform,
-            chat_id=home_chat_id,
-            chat_name=home.name,
-            chat_type=dest_chat_type,
-            user_id=user_id,
-            user_name="Handoff",
-            thread_id=effective_thread_id,
-            scope_id=scope_id,
-            profile=profile_name,
-        )
-        source._transport_adapter_ref = weakref.ref(self)
+            source.user_id = str(home.user_id)
         return source
 
     async def create_handoff_thread(

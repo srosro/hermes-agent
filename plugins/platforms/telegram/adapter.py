@@ -3795,39 +3795,30 @@ class TelegramAdapter(BasePlatformAdapter):
         effective_thread_id,
         profile_name,
     ):
-        """Private-chat DM topics use the DM-topic source shape.
+        """Telegram destinations key like their next organic reply.
 
-        A handoff-created topic in a positive (private) chat id must key like
-        the user's next real message — ``chat_type="dm"`` with the real user
-        id (== chat id) — or the synthetic turn binds a generic ``thread``
-        key no reply ever derives. Group/forum homes keep the generic shape.
+        A handoff-created topic in a positive (private) chat id uses the
+        DM-topic shape — ``chat_type="dm"`` with the real user id (== chat
+        id) — matching the user's next real message. A forum/supergroup topic
+        (negative chat id) keys as ``"group"`` with the topic in
+        ``thread_id``, the shape organic group messages arrive with; a
+        generic ``"thread"`` key would strand the handed-off transcript.
         """
-        import weakref
-
         from gateway.delivery import looks_like_telegram_private_chat_id
-        from gateway.session import SessionSource
 
-        home_chat_id = str(home.chat_id)
-        if not looks_like_telegram_private_chat_id(home_chat_id):
-            return await super().build_handoff_dest_source(
-                platform=platform,
-                home=home,
-                new_thread_id=new_thread_id,
-                effective_thread_id=effective_thread_id,
-                profile_name=profile_name,
-            )
-        source = SessionSource(
+        source = await super().build_handoff_dest_source(
             platform=platform,
-            chat_id=home_chat_id,
-            chat_name=home.name,
-            chat_type="dm",
-            user_id=home_chat_id,
-            user_name="Handoff",
-            thread_id=effective_thread_id,
-            scope_id=getattr(home, "scope_id", None),
-            profile=profile_name,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=effective_thread_id,
+            profile_name=profile_name,
         )
-        source._transport_adapter_ref = weakref.ref(self)
+        home_chat_id = str(home.chat_id)
+        if looks_like_telegram_private_chat_id(home_chat_id):
+            source.chat_type = "dm"
+            source.user_id = home_chat_id
+        elif effective_thread_id:
+            source.chat_type = "group"
         return source
 
     async def create_handoff_thread(

@@ -65,6 +65,12 @@ def _slack_adapter(*, chat_info=None, scope=None, extra=None, raise_lookup=False
 
     a.get_chat_info = get_chat_info
     a.scope_id_for_chat = lambda chat_id: scope
+    from types import SimpleNamespace
+
+    tspu = bool((extra or {}).get("thread_sessions_per_user", False))
+    a._session_store = SimpleNamespace(
+        resolve_session_scope=lambda source: (True, tspu)
+    )
     return a
 
 
@@ -185,7 +191,7 @@ def test_slack_per_user_threads_honor_the_gateway_level_flag():
 
     adapter = _slack_adapter(chat_info={"name": "general", "type": "group"})
     adapter._session_store = SimpleNamespace(
-        config=GatewayConfig(thread_sessions_per_user=True)
+        resolve_session_scope=lambda source: (True, True)
     )
     dest = _dest(
         adapter,
@@ -209,4 +215,6 @@ def test_telegram_private_chat_topic_keys_as_dm_topic():
 
     group_chat = "-1001234567890"
     dest = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, group_chat), "77")
-    assert dest.chat_type == "thread"
+    # Organic supergroup topic replies arrive as "group" with the topic in
+    # thread_id — a generic "thread" key would strand the transcript.
+    assert dest.chat_type == "group"

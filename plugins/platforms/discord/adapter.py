@@ -7360,10 +7360,9 @@ class DiscordAdapter(BasePlatformAdapter):
         Organic in-thread messages are built with ``chat_id == thread id``
         (``build_session_key`` yields ``…:thread:{thread}:{thread}``); keying
         on the parent channel would spawn a fresh session on the next reply.
+        Any effective thread counts — a home channel CONFIGURED with a thread
+        keys the same way when thread creation fails or is skipped.
         """
-        import dataclasses
-        import weakref
-
         source = await super().build_handoff_dest_source(
             platform=platform,
             home=home,
@@ -7371,9 +7370,10 @@ class DiscordAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
-        if source.chat_type == "thread" and effective_thread_id:
-            source = dataclasses.replace(source, chat_id=str(effective_thread_id))
-            source._transport_adapter_ref = weakref.ref(self)
+        if effective_thread_id:
+            source.chat_type = "thread"
+            source.chat_id = str(effective_thread_id)
+            source.user_id = "system:handoff"
         return source
 
     async def create_handoff_thread(

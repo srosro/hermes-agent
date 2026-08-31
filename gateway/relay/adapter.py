@@ -3356,10 +3356,12 @@ class RelayAdapter(BasePlatformAdapter):
         binds capabilities, never ``"thread"``. Without the op, keep the
         generic default: the local ``get_chat_info`` fallback answers
         ``"dm"`` for everything, which would key a channel home as a DM.
-        """
-        import dataclasses
-        import weakref
 
+        Multi-platform relays are not scalar: the op check reads the LOGICAL
+        platform's negotiated descriptor (a secondary Slack lane's support is
+        not the primary identity's), and the chat-info request is tagged with
+        that platform so the connector answers from the right lane.
+        """
         source = await super().build_handoff_dest_source(
             platform=platform,
             home=home,
@@ -3367,10 +3369,18 @@ class RelayAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
-        if self._transport is not None and self.descriptor.supports_op("get_chat_info"):
+        if self._transport is None:
+            return source
+        resolver = getattr(self._transport, "descriptor_for_platform", None)
+        descriptor = (
+            resolver(platform.value) if callable(resolver) else None
+        ) or self.descriptor
+        if descriptor.supports_op("get_chat_info"):
             info: Dict[str, Any] = {}
             try:
-                info = await self._transport.get_chat_info(str(home.chat_id)) or {}
+                info = await self._transport.get_chat_info(
+                    str(home.chat_id), platform=platform.value
+                ) or {}
             except Exception:
                 logger.warning(
                     "Handoff: relay get_chat_info(%s) failed — keeping "
@@ -3378,8 +3388,7 @@ class RelayAdapter(BasePlatformAdapter):
                     home.chat_id, source.chat_type, exc_info=True,
                 )
             if info.get("type") in ("dm", "group"):
-                source = dataclasses.replace(source, chat_type=info["type"])
-                source._transport_adapter_ref = weakref.ref(self)
+                source.chat_type = info["type"]
         return source
 
     async def create_handoff_thread(
