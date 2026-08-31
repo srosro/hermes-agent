@@ -14369,6 +14369,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ).resolve_session_scope(dest_source)
         if (
             platform == Platform.SLACK
+            and dest_chat_type != "dm"
             and effective_thread_id
             and _thread_per_user
         ):

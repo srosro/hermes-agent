@@ -63,15 +63,16 @@ def _handoff_key(
     platform: Platform,
     home_chat_id: str,
     thread_id: str,
+    scope_id: str | None = None,
 ) -> str:
     """Key the handoff produces after the fix.
 
-    Mirrors the fixed logic in GatewayRunner._process_handoff: for Discord
-    thread destinations, chat_id is the thread's own id; for other platforms,
-    chat_id remains the parent/home channel.
+    Mirrors the fixed logic in GatewayRunner._process_handoff: Discord thread
+    destinations key on the thread's own id; Slack destinations use the
+    adapter-native "group" chat type and carry the home workspace scope_id;
+    other platforms keep the parent/home channel with chat_type "thread".
     """
-    dest_chat_type = "thread"
-    # This mirrors the fixed logic in GatewayRunner._process_handoff.
+    dest_chat_type = "group" if platform == Platform.SLACK else "thread"
     if platform == Platform.DISCORD and dest_chat_type == "thread" and thread_id:
         dest_chat_id = str(thread_id)
     else:
@@ -83,6 +84,7 @@ def _handoff_key(
         user_id="system:handoff",
         user_name="Handoff",
         thread_id=str(thread_id),
+        scope_id=scope_id,
     )
     return build_session_key(dest_source, thread_sessions_per_user=False)
 
@@ -115,26 +117,22 @@ def test_discord_handoff_key_does_not_use_parent_channel():
     assert handoff != buggy, "handoff regressed to keying on the parent channel"
 
 
-def test_slack_handoff_key_uses_parent_channel_not_thread_id():
-    """Slack adapter keys organic thread messages with chat_id=channel_id
-    (parent), not the thread ts. The fix must NOT apply to Slack — otherwise
-    the handoff key would use the thread ts as chat_id, breaking the match."""
+def test_slack_handoff_key_matches_organic_thread_reply_key():
+    """A Slack handoff destination must derive the exact key an organic reply
+    in that thread uses: chat_id = parent channel, chat_type = "group"
+    (adapter-native — a "thread" chat type binds a transcript no reply can
+    reach), and the same workspace scope_id."""
     channel_id = "C12345678"
     thread_ts = "1690000000.123456"
     user_id = "U123456"
 
     organic = _organic_slack_thread_key(channel_id, thread_ts, user_id)
     handoff = _handoff_key(Platform.SLACK, channel_id, thread_ts)
-
-    # The handoff uses chat_type="thread" while Slack organic uses "group",
-    # so these keys differ in the chat_type slot (a pre-existing mismatch,
-    # NOT caused by this fix). The important assertion is that the handoff
-    # does NOT use the thread_ts as chat_id (the regression this guard prevents).
-    assert "thread_ts" not in handoff or thread_ts not in handoff.split(":")[-2:-1], (
-        f"handoff key {handoff!r} incorrectly uses thread ts as chat_id"
+    assert handoff == organic, (
+        f"handoff key {handoff!r} != organic thread-reply key {organic!r}; "
+        "a reply in the handed-off thread would spawn a new session"
     )
-    # Verify the handoff key still contains the parent channel_id
-    assert channel_id in handoff, (
-        f"handoff key {handoff!r} lost the parent channel id — "
-        "the Discord-specific guard leaked into Slack"
-    )
+    # scope_id lands in the key (workspace-scoped session identity).
+    scoped = _handoff_key(Platform.SLACK, channel_id, thread_ts, scope_id="T_TEAM")
+    assert "T_TEAM" in scoped.split(":"), scoped
+    assert scoped != handoff
