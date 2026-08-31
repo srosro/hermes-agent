@@ -64,29 +64,87 @@ def _handoff_key(
     home_chat_id: str,
     thread_id: str,
     scope_id: str | None = None,
+    *,
+    chat_info: dict | None = None,
+    adapter_scope_id: str | None = None,
 ) -> str:
-    """Key the handoff produces after the fix.
+    """Key the REAL handoff construction produces.
 
-    Mirrors the fixed logic in GatewayRunner._process_handoff: Discord thread
-    destinations key on the thread's own id; Slack destinations use the
-    adapter-native "group" chat type and carry the home workspace scope_id;
-    other platforms keep the parent/home channel with chat_type "thread".
+    Drives GatewayRunner._build_handoff_dest_source (no mirror) with a stub
+    adapter: ``chat_info`` is what the platform adapter would report for the
+    home chat, ``adapter_scope_id`` its workspace scope for legacy homes.
     """
-    dest_chat_type = "group" if platform == Platform.SLACK else "thread"
-    if platform == Platform.DISCORD and dest_chat_type == "thread" and thread_id:
-        dest_chat_id = str(thread_id)
-    else:
-        dest_chat_id = str(home_chat_id)
-    dest_source = SessionSource(
+    import asyncio
+
+    from gateway.config import HomeChannel
+    from gateway.run import GatewayRunner
+
+    class _StubAdapter:
+        async def get_chat_info(self, chat_id):
+            return chat_info or {"name": chat_id, "type": "group"}
+
+        def scope_id_for_chat(self, chat_id):
+            return adapter_scope_id
+
+    runner = object.__new__(GatewayRunner)
+    home = HomeChannel(
         platform=platform,
-        chat_id=dest_chat_id,
-        chat_type=dest_chat_type,
-        user_id="system:handoff",
-        user_name="Handoff",
-        thread_id=str(thread_id),
+        chat_id=str(home_chat_id),
+        name="home",
         scope_id=scope_id,
     )
+    dest_source = asyncio.run(
+        runner._build_handoff_dest_source(
+            platform=platform,
+            home=home,
+            new_thread_id=str(thread_id),
+            effective_thread_id=str(thread_id),
+            profile_name=None,
+            adapter=_StubAdapter(),
+        )
+    )
     return build_session_key(dest_source, thread_sessions_per_user=False)
+
+
+def test_slack_dm_home_handoff_keys_as_dm():
+    """An IM home must key "dm" like organic IM replies — the adapter's
+    reported chat type decides, not a hardcoded "group"."""
+    import asyncio
+
+    from gateway.config import HomeChannel
+    from gateway.run import GatewayRunner
+
+    class _DmAdapter:
+        async def get_chat_info(self, chat_id):
+            return {"name": chat_id, "type": "dm"}
+
+        def scope_id_for_chat(self, chat_id):
+            return "T_TEAM"
+
+    runner = object.__new__(GatewayRunner)
+    home = HomeChannel(platform=Platform.SLACK, chat_id="D0DMDMDM", name="dm home")
+    dest = asyncio.run(
+        runner._build_handoff_dest_source(
+            platform=Platform.SLACK,
+            home=home,
+            new_thread_id="1690000000.123456",
+            effective_thread_id="1690000000.123456",
+            profile_name=None,
+            adapter=_DmAdapter(),
+        )
+    )
+    assert dest.chat_type == "dm"
+    # Legacy env-only home recorded no workspace: recovered from the adapter.
+    assert dest.scope_id == "T_TEAM"
+    organic = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="D0DMDMDM",
+        chat_type="dm",
+        user_id="U123",
+        thread_id="1690000000.123456",
+        scope_id="T_TEAM",
+    )
+    assert build_session_key(dest) == build_session_key(organic)
 
 
 def test_discord_handoff_key_matches_organic_in_thread_key():

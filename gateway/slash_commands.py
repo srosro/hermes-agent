@@ -1072,6 +1072,20 @@ class GatewaySlashCommandsMixin:
         """
         if allow_override and self._resume_caller_is_admin(source):
             return True
+        # An active entry's DURABLE session_key is the identity — compare it
+        # directly with the caller's derived key. Reconstructing the origin
+        # first re-derives scope from a deserialized source that has lost its
+        # transport ref (registry/gateway-default flags instead of the
+        # relay adapter's own), so equal sessions could compare unequal after
+        # a restart.
+        try:
+            _lookup = getattr(type(self.session_store), "lookup_by_session_id", None)
+            _entry = _lookup(self.session_store, target_id) if callable(_lookup) else None
+        except Exception:
+            _entry = None
+        _entry_key = str(getattr(_entry, "session_key", "") or "") if _entry is not None else ""
+        if _entry_key:
+            return _entry_key == self._session_key_for_source(source)
         # Use the live origin only when it resolves to a real SessionSource; a
         # store that can't resolve it (or an unexpected lookup error) must not
         # silently allow/deny — fall through to the deterministic DB scoping.

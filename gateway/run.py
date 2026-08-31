@@ -14153,6 +14153,79 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not task.done():
                         task.cancel()
 
+    async def _build_handoff_dest_source(
+        self,
+        *,
+        platform: Platform,
+        home: "HomeChannel",
+        new_thread_id: Optional[str],
+        effective_thread_id: Optional[str],
+        profile_name: Optional[str],
+        adapter: Any,
+    ) -> SessionSource:
+        """Destination SessionSource for a CLI handoff.
+
+        Built the way the platform adapter keys ORGANIC replies in that
+        conversation — chat type, chat id, workspace scope — so the handoff
+        binds the exact session the next real reply derives. Extracted from
+        ``_process_handoff`` so tests exercise this construction directly
+        instead of mirroring it.
+
+        Telegram private-chat DM topics use the DM-topic source shape (real
+        user id) so topic-mode checks and binding persistence see the same
+        identity as subsequent inbound messages. Discord thread destinations
+        key on the thread's OWN id — its adapter builds organic in-thread
+        messages with ``chat_id == thread id``. Slack never keys "thread":
+        the live adapter says whether the home is an IM ("dm") or a channel
+        ("group"), and legacy env-only homes that recorded no workspace
+        recover it from the adapter's scope map.
+        """
+        home_chat_id = str(home.chat_id)
+        is_telegram_private_chat = (
+            platform == Platform.TELEGRAM
+            and looks_like_telegram_private_chat_id(home_chat_id)
+        )
+
+        if new_thread_id and not is_telegram_private_chat:
+            dest_chat_type = "thread"
+            dest_user_id = "system:handoff"
+        else:
+            dest_chat_type = "dm"
+            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
+
+        scope_id = getattr(home, "scope_id", None)
+        if platform == Platform.SLACK:
+            info: Dict[str, Any] = {}
+            try:
+                info = await adapter.get_chat_info(home_chat_id) or {}
+            except Exception:
+                logger.debug(
+                    "Handoff: Slack get_chat_info(%s) failed", home_chat_id,
+                    exc_info=True,
+                )
+            chat_type = info.get("type")
+            dest_chat_type = chat_type if chat_type in ("dm", "group") else "group"
+            if not scope_id:
+                resolver = getattr(adapter, "scope_id_for_chat", None)
+                scope_id = resolver(home_chat_id) if callable(resolver) else None
+
+        if platform == Platform.DISCORD and dest_chat_type == "thread" and effective_thread_id:
+            dest_chat_id = str(effective_thread_id)
+        else:
+            dest_chat_id = home_chat_id
+
+        return SessionSource(
+            platform=platform,
+            chat_id=dest_chat_id,
+            chat_name=home.name,
+            chat_type=dest_chat_type,
+            user_id=dest_user_id,
+            user_name="Handoff",
+            thread_id=effective_thread_id,
+            scope_id=scope_id,
+            profile=profile_name,
+        )
+
     async def _process_handoff(
         self, row: Dict[str, Any], profile_name: Optional[str] = None,
     ) -> None:
@@ -14265,65 +14338,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             str(home.thread_id) if home.thread_id else None
         )
 
-        # Determine chat_type/user_id for the destination source.
-        #
-        # Telegram private-chat DM topics are represented differently from
-        # group/forum threads by the inbound adapter. A handoff-created topic
-        # in a positive Telegram chat_id must therefore use the same DM-topic
-        # source shape as the user's next real message; otherwise the synthetic
-        # handoff turn binds a generic `thread` session key while real replies
-        # arrive on a `dm` session key.
-        home_chat_id = str(home.chat_id)
-        is_telegram_private_chat = (
-            platform == Platform.TELEGRAM
-            and looks_like_telegram_private_chat_id(home_chat_id)
-        )
-
-        if new_thread_id and not is_telegram_private_chat:
-            # Slack keys organic thread replies as workspace-scoped "group"
-            # sources (chat_id == parent channel, thread in thread_id); a
-            # generic "thread" chat type here binds a transcript no organic
-            # reply's key can ever reach.
-            dest_chat_type = "group" if platform == Platform.SLACK else "thread"
-            dest_user_id = "system:handoff"
-        else:
-            # No thread — assume DM-style for the home channel. For Telegram
-            # private-chat topics, use the real user id (same as chat_id) so
-            # topic-mode checks and binding persistence see the same identity as
-            # subsequent inbound user messages.
-            dest_chat_type = "dm"
-            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
-
-        # Discord thread destinations must key on the thread's OWN id, not the
-        # parent channel's, because the Discord adapter builds organic in-thread
-        # messages with ``chat_id == thread id`` — so ``build_session_key``
-        # yields ``…:thread:{thread}:{thread}``. If the handoff keys on the
-        # parent channel (``…:thread:{parent}:{thread}``) the next real user
-        # reply in the thread resolves to a DIFFERENT session_key and spawns a
-        # fresh session instead of continuing the handed-off one.
-        #
-        # This is Discord-specific: Slack and Telegram adapters key organic
-        # thread messages with ``chat_id == parent_channel`` and the thread
-        #/topic id only in ``thread_id``, so for those platforms the parent
-        # channel is correct (and the deeper chat_type normalization — handoff
-        # uses "thread" but Slack organic uses "group" — is a separate issue).
-        if platform == Platform.DISCORD and dest_chat_type == "thread" and effective_thread_id:
-            dest_chat_id = str(effective_thread_id)
-        else:
-            dest_chat_id = home_chat_id
-        dest_source = SessionSource(
+        dest_source = await self._build_handoff_dest_source(
             platform=platform,
-            chat_id=dest_chat_id,
-            chat_name=home.name,
-            chat_type=dest_chat_type,
-            user_id=dest_user_id,
-            user_name="Handoff",
-            thread_id=effective_thread_id,
-            # Slack keys include the workspace; a scope-less handoff source
-            # would derive a key organic replies never use.
-            scope_id=getattr(home, "scope_id", None),
-            profile=profile_name,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=effective_thread_id,
+            profile_name=profile_name,
+            adapter=adapter,
         )
+        dest_chat_type = dest_source.chat_type
 
         # Compute the gateway's session_key for that destination using the
         # same rules its adapters use, so switch_session targets the right
