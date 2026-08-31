@@ -2056,11 +2056,11 @@ class SessionStore:
         """(group_sessions_per_user, thread_sessions_per_user) for a source.
 
         The single resolution order for session scoping: the source's live
-        receiving adapter (``build_source`` stamps a transport ref on every
-        inbound source — the transport is authoritative for its own turn, and
-        its seeded ``config.extra`` carries the resolved scope), else the
+        adapter (``build_source`` and ``build_handoff_dest_source`` stamp a
+        transport ref — the adapter is authoritative for sources it builds,
+        and its seeded ``config.extra`` carries the resolved scope), else the
         (profile, platform) registered scope for sources built away from any
-        adapter (cron and handoff destinations, persisted origins), else the
+        adapter (cron destinations, persisted origins), else the
         gateway config. ``source.profile`` names the destination session
         namespace, never scope ownership — an adapter routing into another
         profile's namespace still scopes by its own transport. Every key

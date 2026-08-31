@@ -2540,10 +2540,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         scope_id = getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
         user_id = "system:handoff"
+        # Fallback-aware like _create_adapter's seeding: extra when it carries
+        # the key (gateway-created adapters are always seeded), else the
+        # gateway config via the wired store — a deployment setting the flag
+        # only at gateway level must still substitute the participant.
+        _thread_per_user = self.config.extra.get("thread_sessions_per_user")
+        if _thread_per_user is None:
+            _store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
+            _thread_per_user = getattr(_store_cfg, "thread_sessions_per_user", False)
         if (
             dest_chat_type != "dm"
             and effective_thread_id
-            and self.config.extra.get("thread_sessions_per_user", False)
+            and _thread_per_user
         ):
             if not getattr(home, "user_id", None):
                 raise RuntimeError(
