@@ -2744,6 +2744,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    resolve_session_scope_via,
 )
 from gateway.delivery import (
     DeliveryRouter,
@@ -14356,17 +14357,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # at construction is invisible to a re-loaded config object, and a key
         # built from the wrong scope points switch_session at a session
         # nothing routes to.
-        # Same duck-typed/Mock-store pitfall as the profile resolver above: a
-        # MagicMock resolver returns an ununpackable MagicMock, so validate the
-        # shape before trusting it.
-        _scope_store = getattr(self.async_session_store, "_store", self.async_session_store)
-        _scope_resolver = getattr(_scope_store, "resolve_session_scope", None)
-        _scope = _scope_resolver(dest_source) if callable(_scope_resolver) else None
-        if isinstance(_scope, tuple) and len(_scope) == 2:
-            _group_per_user, _thread_per_user = _scope
-        else:
-            _group_per_user = extra.get("group_sessions_per_user", True)
-            _thread_per_user = extra.get("thread_sessions_per_user", False)
+        _group_per_user, _thread_per_user = resolve_session_scope_via(
+            getattr(self.async_session_store, "_store", self.async_session_store),
+            self.config,
+            dest_source,
+        )
         session_key = build_session_key(
             dest_source,
             group_sessions_per_user=_group_per_user,
@@ -19088,12 +19083,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ) or ""
         # Resolve through the store so sender attribution stays in lock-step
         # with the key shape for platforms that override scope in their extra.
-        _store = getattr(self, "session_store", None)
-        if _store is not None:
-            _group_sessions_per_user, _thread_sessions_per_user = _store.resolve_session_scope(source)
-        else:
-            _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-            _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        _group_sessions_per_user, _thread_sessions_per_user = resolve_session_scope_via(
+            getattr(self, "session_store", None), self.config, source
+        )
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.

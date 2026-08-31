@@ -1046,6 +1046,28 @@ def build_channel_continuity_note(
     )
 
 
+def resolve_session_scope_via(
+    store: Any,
+    config: Any,
+    source: SessionSource,
+) -> tuple[bool, bool]:
+    """(group_sessions_per_user, thread_sessions_per_user) via a store, safely.
+
+    The one guard for every caller that resolves session scope through a
+    possibly duck-typed/Mock store: a Mock's auto-vivified
+    ``resolve_session_scope`` returns an ununpackable Mock, so validate the
+    shape and fall back to the gateway config — the pre-registry behavior.
+    """
+    resolver = getattr(store, "resolve_session_scope", None) if store is not None else None
+    scope = resolver(source) if callable(resolver) else None
+    if isinstance(scope, tuple) and len(scope) == 2:
+        return scope
+    return (
+        getattr(config, "group_sessions_per_user", True),
+        getattr(config, "thread_sessions_per_user", False),
+    )
+
+
 def is_shared_multi_user_session(
     source: SessionSource,
     *,
