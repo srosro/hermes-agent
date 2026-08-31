@@ -156,8 +156,12 @@ def test_slack_lookup_failure_falls_back_to_identity_prefix():
     dm_home = _home(Platform.SLACK, "D0DMDMDM", thread_id="1690000000.123456")
     assert _dest(adapter, Platform.SLACK, dm_home, None).chat_type == "dm"
     assert _dest(adapter, Platform.SLACK, dm_home, "1690000000.123456").chat_type == "dm"
-    channel_home = _home(Platform.SLACK, "C12345678")
-    assert _dest(adapter, Platform.SLACK, channel_home, None).chat_type == "group"
+    # Non-thread groups key per participant under the default scope, so the
+    # home's recorded user rides along (generalized participant application).
+    channel_home = _home(Platform.SLACK, "C12345678", user_id="U1")
+    no_thread_group = _dest(adapter, Platform.SLACK, channel_home, None)
+    assert no_thread_group.chat_type == "group"
+    assert no_thread_group.user_id == "U1"
     assert _dest(adapter, Platform.SLACK, channel_home, "169.1").chat_type == "group"
 
 

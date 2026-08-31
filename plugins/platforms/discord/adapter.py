@@ -7346,14 +7346,14 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
 
-    async def build_handoff_dest_source(
+    async def _shape_handoff_dest_source(
         self,
+        source,
         *,
         platform,
         home,
         new_thread_id,
         effective_thread_id,
-        profile_name,
     ):
         """Thread destinations key on the thread's OWN id.
 
@@ -7363,13 +7363,6 @@ class DiscordAdapter(BasePlatformAdapter):
         Any effective thread counts — a home channel CONFIGURED with a thread
         keys the same way when thread creation fails or is skipped.
         """
-        source = await super().build_handoff_dest_source(
-            platform=platform,
-            home=home,
-            new_thread_id=new_thread_id,
-            effective_thread_id=effective_thread_id,
-            profile_name=profile_name,
-        )
         self.apply_discord_handoff_shape(source, home, effective_thread_id)
         if source.chat_type == "dm" and not getattr(home, "chat_type", None):
             # Legacy env-configured guild home: no recorded identity and no
@@ -7386,7 +7379,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 info = {}
             if info.get("type") in ("group", "channel", "thread"):
                 source.chat_type = "group"
-        return source
 
     async def create_handoff_thread(
         self,

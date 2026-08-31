@@ -3786,14 +3786,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
-    async def build_handoff_dest_source(
+    async def _shape_handoff_dest_source(
         self,
+        source,
         *,
         platform,
         home,
         new_thread_id,
         effective_thread_id,
-        profile_name,
     ):
         """Telegram destinations key like their next organic reply.
 
@@ -3804,15 +3804,7 @@ class TelegramAdapter(BasePlatformAdapter):
         ``thread_id``, the shape organic group messages arrive with; a
         generic ``"thread"`` key would strand the handed-off transcript.
         """
-        source = await super().build_handoff_dest_source(
-            platform=platform,
-            home=home,
-            new_thread_id=new_thread_id,
-            effective_thread_id=effective_thread_id,
-            profile_name=profile_name,
-        )
         self.apply_telegram_handoff_shape(source, home, effective_thread_id)
-        return source
 
     async def create_handoff_thread(
         self,

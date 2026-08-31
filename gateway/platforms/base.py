@@ -4274,18 +4274,28 @@ class BasePlatformAdapter(ABC):
             source.chat_type = "group" if new_thread_id else "dm"
 
     @staticmethod
-    def apply_handoff_participant(source: "SessionSource", home: Any, thread_per_user: bool) -> None:
-        """Under per-user thread isolation the home channel's authenticated
-        user keys the participant — a ``system:handoff`` placeholder binds a
-        key no real reply carries. Fails loudly when the home never recorded
-        one. Shared by the Slack override and the relay's Slack lane."""
-        if source.chat_type == "dm" or not source.thread_id or not thread_per_user:
+    def apply_handoff_participant(
+        source: "SessionSource", home: Any, scope: "tuple[bool, bool]"
+    ) -> None:
+        """Whenever the session KEY includes the participant, the home
+        channel's authenticated user must key it — a ``system:handoff``
+        placeholder binds a key no real reply carries. Threads key per user
+        under ``thread_sessions_per_user``; non-thread groups/channels under
+        ``group_sessions_per_user`` (the default). Fails loudly when the home
+        never recorded a user. Applied once, by the base hook, after every
+        adapter's shape pass."""
+        group_per_user, thread_per_user = scope
+        if source.chat_type == "dm":
+            return
+        threaded = bool(source.thread_id or source.prospective_thread_id)
+        per_user = thread_per_user if threaded else group_per_user
+        if not per_user:
             return
         if not getattr(home, "user_id", None):
             raise RuntimeError(
-                "thread handoff under thread_sessions_per_user requires the "
+                "handoff under per-participant session scope requires the "
                 "home channel's user_id to key the participant — re-run "
-                "/sethome from the target thread"
+                "/sethome in the target conversation"
             )
         source.user_id = str(home.user_id)
 
@@ -4308,11 +4318,13 @@ class BasePlatformAdapter(ABC):
         source carries this adapter's transport ref, keeping scope
         resolution adapter-owned like any inbound source.
 
-        Default shape: a created thread keys ``"thread"`` on the home
-        channel; otherwise a DM on the home channel. Adapters whose organic
-        replies key differently (Discord threads key on the thread's own id,
-        Slack keys workspace-scoped dm/group, Telegram private-chat topics
-        key as DM topics) override.
+        This is the ONE authoritative builder: it constructs from the
+        recorded canonical identity, delegates shape refinement to the thin
+        per-adapter ``_shape_handoff_dest_source`` hook (Discord threads key
+        on the thread's own id, Slack keys workspace-scoped dm/group,
+        Telegram private-chat topics key as DM topics), then applies the
+        participant exactly once against the FINAL shape whenever the
+        session key includes one.
         """
         from gateway.session import SessionSource
 
@@ -4320,9 +4332,11 @@ class BasePlatformAdapter(ABC):
         if new_thread_id:
             chat_type, user_id = "thread", "system:handoff"
         else:
-            # Canonical identity recorded at /sethome wins; "dm" is the
-            # legacy default for homes recorded before identity capture.
-            chat_type = recorded if recorded in ("dm", "group") else "dm"
+            # Canonical identity recorded at /sethome wins for every
+            # non-thread shape organic replies can carry ("channel"
+            # included); "dm" is the legacy default for homes recorded
+            # before identity capture. "thread" belongs to the branch above.
+            chat_type = recorded if recorded and recorded != "thread" else "dm"
             user_id = "system:handoff"
         source = SessionSource(
             platform=platform,
@@ -4336,7 +4350,35 @@ class BasePlatformAdapter(ABC):
             profile=profile_name,
         )
         source._transport_adapter_ref = weakref.ref(self)
+        await self._shape_handoff_dest_source(
+            source,
+            platform=platform,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=effective_thread_id,
+        )
+        store = getattr(self, "_session_store", None)
+        if store is not None:
+            self.apply_handoff_participant(
+                source, home, store.resolve_session_scope(source)
+            )
         return source
+
+    async def _shape_handoff_dest_source(
+        self,
+        source: "SessionSource",
+        *,
+        platform: Platform,
+        home: Any,
+        new_thread_id: Optional[str],
+        effective_thread_id: Optional[str],
+    ) -> None:
+        """Thin per-adapter shape refinement, mutating ``source`` in place.
+
+        The base builder owns construction and the participant; adapters
+        override ONLY this to express how their organic replies key. Default:
+        no refinement.
+        """
 
 
     async def edit_message(

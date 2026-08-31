@@ -1255,71 +1255,51 @@ class TestHomeChannelEnvOverrides:
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
 
-    def test_env_overlay_preserves_same_home_recorded_identity(self):
+    @pytest.mark.parametrize(
+        ("platform", "env_key", "chat_id", "env_chat_id", "chat_type", "expect_kept"),
+        [
+            # Same chat: /sethome-recorded identity survives the env overlay.
+            (Platform.SLACK, "SLACK_HOME_CHANNEL", "G0MPIMPIM", "G0MPIMPIM", "dm", True),
+            (Platform.DISCORD, "DISCORD_HOME_CHANNEL", "111222333", "111222333", "group", True),
+            (Platform.TELEGRAM, "TELEGRAM_HOME_CHANNEL", "-100123", "-100123", "group", True),
+            (Platform.SIGNAL, "SIGNAL_HOME_CHANNEL", "+1555000", "+1555000", "group", True),
+            # Different chat: nothing inherited.
+            (Platform.DISCORD, "DISCORD_HOME_CHANNEL", "111222333", "444555666", "group", False),
+        ],
+        ids=["slack-mpim", "discord-guild", "telegram-group", "signal-group", "changed-chat"],
+    )
+    def test_env_overlay_preserves_same_home_recorded_identity(
+        self, platform, env_key, chat_id, env_chat_id, chat_type, expect_kept
+    ):
         """The env mirror carries no chat_type/user_id/scope_id; when it names
-        the SAME chat /sethome recorded, reload must keep that provenance —
-        dropping it re-strands the identity (a Slack MPIM home reverts to
-        "group" inference, a Discord guild home to "dm")."""
-        cases = [
-            (
-                Platform.SLACK,
-                HomeChannel(
-                    platform=Platform.SLACK,
-                    chat_id="G0MPIMPIM",
-                    name="mp",
-                    user_id="U1",
-                    scope_id="T_TEAM",
-                    chat_type="dm",
-                ),
-                {"SLACK_HOME_CHANNEL": "G0MPIMPIM"},
-                "dm",
-            ),
-            (
-                Platform.DISCORD,
-                HomeChannel(
-                    platform=Platform.DISCORD,
-                    chat_id="111222333",
-                    name="guild-general",
-                    scope_id="999888777",
-                    chat_type="group",
-                ),
-                {"DISCORD_HOME_CHANNEL": "111222333"},
-                "group",
-            ),
-        ]
-        for platform, recorded_home, env, expected_type in cases:
-            config = GatewayConfig(
-                platforms={
-                    platform: PlatformConfig(
-                        enabled=True, token="***", home_channel=recorded_home
-                    )
-                }
-            )
-            with patch.dict(os.environ, env, clear=True):
-                _apply_env_overrides(config)
-            home = config.platforms[platform].home_channel
-            assert home.chat_type == expected_type, platform.value
-            assert home.scope_id == recorded_home.scope_id, platform.value
-            assert home.user_id == recorded_home.user_id, platform.value
-        # A DIFFERENT chat in the env mirror must NOT inherit the old
-        # home's identity.
+        the SAME chat /sethome recorded, reload keeps that provenance —
+        dropping it re-strands the identity. A DIFFERENT chat inherits
+        nothing."""
+        extra = {"http_url": "http://x", "account": "+1"} if platform is Platform.SIGNAL else {}
         config = GatewayConfig(
             platforms={
-                Platform.DISCORD: PlatformConfig(
+                platform: PlatformConfig(
                     enabled=True,
                     token="***",
+                    extra=extra,
                     home_channel=HomeChannel(
-                        platform=Platform.DISCORD,
-                        chat_id="111222333",
-                        name="old",
-                        chat_type="group",
+                        platform=platform,
+                        chat_id=chat_id,
+                        name="recorded",
+                        user_id="U1",
+                        scope_id="S1",
+                        chat_type=chat_type,
                     ),
                 )
             }
         )
-        with patch.dict(os.environ, {"DISCORD_HOME_CHANNEL": "444555666"}, clear=True):
+        with patch.dict(os.environ, {env_key: env_chat_id}, clear=True):
             _apply_env_overrides(config)
-        assert config.platforms[Platform.DISCORD].home_channel.chat_type is None
+        home = config.platforms[platform].home_channel
+        if expect_kept:
+            assert (home.chat_type, home.user_id, home.scope_id) == (chat_type, "U1", "S1"), platform.value
+        else:
+            assert (home.chat_type, home.user_id, home.scope_id) == (None, None, None), platform.value
 
 
 class TestMultiplexProfilesEnvOverride:

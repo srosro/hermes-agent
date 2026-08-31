@@ -36,10 +36,14 @@ def _adapter(tag):
     a.send = AsyncMock(return_value=SimpleNamespace(success=True))
     a.create_handoff_thread = AsyncMock(return_value=None)
     # The real base hook, bound to the mock: the handoff path awaits it and
-    # consumes the SessionSource it returns.
+    # consumes the SessionSource it returns. The shape hook and store are
+    # neutralized explicitly — a MagicMock auto-attribute is not awaitable
+    # and its scope tuple is not unpackable.
     a.build_handoff_dest_source = _types.MethodType(
         BasePlatformAdapter.build_handoff_dest_source, a
     )
+    a._shape_handoff_dest_source = AsyncMock(return_value=None)
+    a._session_store = None
     a._bot = None
     return a
 

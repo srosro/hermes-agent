@@ -2498,42 +2498,30 @@ class SlackAdapter(BasePlatformAdapter):
             if lock_acquired and not self._running:
                 self._release_platform_lock()
 
-    async def build_handoff_dest_source(
+    async def _shape_handoff_dest_source(
         self,
+        source,
         *,
         platform,
         home,
         new_thread_id,
         effective_thread_id,
-        profile_name,
     ):
         """Slack never keys ``"thread"`` — organic replies are workspace-scoped
         ``"dm"``/``"group"`` sources (chat_id = parent channel, thread in
         thread_id).
 
-        The real conversations API decides IM vs channel; on failure the
-        thread/no-thread intent is preserved (a no-thread DM fallback stays
-        ``"dm"``), logged at warning since this lookup is what keys IM homes
-        correctly. Legacy env-only homes that recorded no workspace recover it
-        from the adapter's scope map. Under per-user thread isolation —
-        resolved through the store's canonical scope resolver, the one
-        precedence implementation — the home channel's authenticated user
-        keys the participant; a ``system:handoff`` placeholder would bind a
-        key no real reply carries, and its absence fails loudly.
+        Recorded identity wins outright; for legacy homes the id prefix
+        decides and the real conversations API refines it (distinguishing
+        mpim from private channels, which both mint G… ids), with failures
+        logged at warning since this lookup is what keys legacy IM homes
+        correctly. Legacy env-only homes that recorded no workspace recover
+        it from the adapter's scope map. The participant is the base
+        builder's job.
         """
-        source = await super().build_handoff_dest_source(
-            platform=platform,
-            home=home,
-            new_thread_id=new_thread_id,
-            effective_thread_id=effective_thread_id,
-            profile_name=profile_name,
-        )
         home_chat_id = str(home.chat_id)
         self.apply_slack_handoff_shape(source, home, new_thread_id)
         if not getattr(home, "chat_type", None):
-            # Legacy home without recorded identity: the conversations API
-            # refines the prefix inference (it distinguishes mpim from
-            # private channels, which both mint G… ids).
             info: Dict[str, Any] = {}
             try:
                 info = await self.get_chat_info(home_chat_id) or {}
@@ -2548,13 +2536,6 @@ class SlackAdapter(BasePlatformAdapter):
         source.scope_id = (
             getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
         )
-        # _session_store is a hard precondition here (wired by set_session_store
-        # right after construction in the gateway lifecycle) — consistent with
-        # the fail-fast RuntimeError inside the substitution itself.
-        self.apply_handoff_participant(
-            source, home, self._session_store.resolve_session_scope(source)[1]
-        )
-        return source
 
     async def create_handoff_thread(
         self,

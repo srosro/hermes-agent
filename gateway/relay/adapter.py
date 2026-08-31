@@ -3341,86 +3341,67 @@ class RelayAdapter(BasePlatformAdapter):
 
     # ── Phase 4 thread lifecycle ──────────────────────────────────────────
 
-    async def build_handoff_dest_source(
+    async def _shape_handoff_dest_source(
         self,
+        source,
         *,
         platform,
         home,
         new_thread_id,
         effective_thread_id,
-        profile_name,
     ):
-        """The connector owns the platform connection, so its ``get_chat_info``
-        answer decides dm/group when it advertises the op — the relay's
-        logical lanes key organic replies as dm/group like the connector
-        binds capabilities, never ``"thread"``. Without the op, keep the
-        generic default: the local ``get_chat_info`` fallback answers
-        ``"dm"`` for everything, which would key a channel home as a DM.
+        """Logical-platform shape refinement for relay-fronted homes.
 
-        Multi-platform relays are not scalar: the op check reads the LOGICAL
-        platform's negotiated descriptor (a secondary Slack lane's support is
-        not the primary identity's), and the chat-info request is tagged with
-        that platform so the connector answers from the right lane.
+        The relay fronts platforms whose native overrides can't run here
+        (sibling classes, and plugin adapters may not even be importable in a
+        relay-only deployment), so the shared shape helpers apply the same
+        key shapes the native adapters do. Discord/Telegram shapes are
+        authoritative; chat-typed lanes (Slack, and any other dm/group
+        platform) get the connector's chat-info answer as a refinement on
+        top of their shape default, never as the sole source of truth —
+        recorded canonical identity skips the lookup entirely. The op check
+        reads the LOGICAL platform's negotiated descriptor (a secondary
+        lane's support is not the primary identity's) and the request is
+        tagged with that platform. The participant is the base builder's job.
         """
-        source = await super().build_handoff_dest_source(
-            platform=platform,
-            home=home,
-            new_thread_id=new_thread_id,
-            effective_thread_id=effective_thread_id,
-            profile_name=profile_name,
-        )
-        # Logical-platform shape normalization: the relay fronts platforms
-        # whose native overrides can't run here (sibling classes, and plugin
-        # adapters may not even be importable in a relay-only deployment), so
-        # the shared shape helpers apply the same key shapes the native
-        # adapters do. Discord/Telegram shapes are authoritative; chat-typed
-        # lanes (Slack, and any other dm/group platform) get the connector's
-        # chat-info answer as a refinement on top of their shape default,
-        # never as the sole source of truth.
         if platform == Platform.DISCORD:
             self.apply_discord_handoff_shape(source, home, effective_thread_id)
-            return source
+            return
         if platform == Platform.TELEGRAM:
             self.apply_telegram_handoff_shape(source, home, effective_thread_id)
-            return source
+            return
         if platform == Platform.SLACK:
             self.apply_slack_handoff_shape(source, home, new_thread_id)
-        # Recorded canonical identity skips the connector lookup entirely —
-        # same in ("dm", "group") filter every other consumer applies.
-        if getattr(home, "chat_type", None) not in ("dm", "group"):
-            descriptor = None
-            if self._transport is not None:
-                resolver = getattr(self._transport, "descriptor_for_platform", None)
-                if callable(resolver):
-                    # Deliberately stricter than the other per-platform
-                    # descriptor reads in this adapter (which fall back to the
-                    # primary's for graceful degradation of cosmetic
-                    # capabilities): here the answer decides SESSION IDENTITY,
-                    # so a resolver that knows the lanes and holds none for
-                    # this platform means no negotiated capabilities — never
-                    # borrow the primary's.
-                    descriptor = resolver(platform.value)
-                else:
-                    descriptor = self.descriptor
-            if descriptor is not None and descriptor.supports_op("get_chat_info"):
-                info: Dict[str, Any] = {}
-                try:
-                    info = await self._transport.get_chat_info(
-                        str(home.chat_id), platform=platform.value
-                    ) or {}
-                except Exception:
-                    logger.warning(
-                        "Handoff: relay get_chat_info(%s) failed — keeping "
-                        "chat_type=%r for the destination key",
-                        home.chat_id, source.chat_type, exc_info=True,
-                    )
-                if info.get("type") in ("dm", "group"):
-                    source.chat_type = info["type"]
-        if platform == Platform.SLACK:
-            self.apply_handoff_participant(
-                source, home, self._session_store.resolve_session_scope(source)[1]
-            )
-        return source
+        if getattr(home, "chat_type", None) in ("dm", "group"):
+            return
+        descriptor = None
+        if self._transport is not None:
+            resolver = getattr(self._transport, "descriptor_for_platform", None)
+            if callable(resolver):
+                # Deliberately stricter than the other per-platform
+                # descriptor reads in this adapter (which fall back to the
+                # primary's for graceful degradation of cosmetic
+                # capabilities): here the answer decides SESSION IDENTITY,
+                # so a resolver that knows the lanes and holds none for
+                # this platform means no negotiated capabilities — never
+                # borrow the primary's.
+                descriptor = resolver(platform.value)
+            else:
+                descriptor = self.descriptor
+        if descriptor is not None and descriptor.supports_op("get_chat_info"):
+            info: Dict[str, Any] = {}
+            try:
+                info = await self._transport.get_chat_info(
+                    str(home.chat_id), platform=platform.value
+                ) or {}
+            except Exception:
+                logger.warning(
+                    "Handoff: relay get_chat_info(%s) failed — keeping "
+                    "chat_type=%r for the destination key",
+                    home.chat_id, source.chat_type, exc_info=True,
+                )
+            if info.get("type") in ("dm", "group"):
+                source.chat_type = info["type"]
 
     async def create_handoff_thread(
         self,
