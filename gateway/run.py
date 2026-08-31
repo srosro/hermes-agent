@@ -14199,12 +14199,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 info = await adapter.get_chat_info(home_chat_id) or {}
             except Exception:
-                logger.debug(
-                    "Handoff: Slack get_chat_info(%s) failed", home_chat_id,
-                    exc_info=True,
+                # warning, not debug: this lookup IS the mechanism that keys
+                # an IM home as "dm" — a recurring failure silently reverts
+                # to the wrong chat type and must be operator-visible.
+                logger.warning(
+                    "Handoff: Slack get_chat_info(%s) failed — keeping "
+                    "chat_type=%r for the destination key",
+                    home_chat_id, dest_chat_type, exc_info=True,
                 )
             chat_type = info.get("type")
-            dest_chat_type = chat_type if chat_type in ("dm", "group") else "group"
+            if chat_type in ("dm", "group"):
+                dest_chat_type = chat_type
+            elif dest_chat_type == "thread":
+                # Slack never keys "thread"; without adapter truth, a
+                # thread-created destination keys like an organic channel
+                # reply. The no-thread branch's "dm" is kept as computed.
+                dest_chat_type = "group"
             if not scope_id:
                 resolver = getattr(adapter, "scope_id_for_chat", None)
                 scope_id = resolver(home_chat_id) if callable(resolver) else None

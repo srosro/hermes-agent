@@ -809,6 +809,46 @@ class TestSameOriginChatGroupScoping:
         slack_b = _replace(slack_a, scope_id="T_OTHER")
         assert runner._same_origin_chat(slack_a, slack_b) is False
 
+    @pytest.mark.asyncio
+    async def test_resume_compares_durable_keys_for_active_entries(self):
+        """An active entry's durable session_key decides directly: equal keys
+        allow, different keys deny — no fallthrough to origin reconstruction,
+        which re-derives scope without the transport ref and can misjudge
+        relay sessions after a restart."""
+        runner = _make_runner()
+        caller = self._src("alice")
+        caller_key = runner._session_key_for_source(caller)
+
+        class _KeyedStore:
+            """Real class so lookup_by_session_id exists on the TYPE (the
+            production lookup deliberately reads type(store) to sidestep
+            MagicMock auto-attributes)."""
+
+            entry = None
+
+            def lookup_by_session_id(self, session_id):
+                return self.entry
+
+        store = _KeyedStore()
+        store.resolve_session_scope = runner.session_store.resolve_session_scope
+        store._generate_session_key = lambda source: build_session_key(source)
+        runner.session_store = store
+
+        origin_called = []
+        runner._gateway_session_origin_for_id = (
+            lambda sid: origin_called.append(sid)
+        )
+
+        _KeyedStore.entry = SimpleNamespace(session_key=caller_key)
+        assert await runner._resume_target_allowed(caller, "sess-1") is True
+        _KeyedStore.entry = SimpleNamespace(session_key="agent:main:discord:group:other")
+        assert await runner._resume_target_allowed(caller, "sess-1") is False
+        assert not origin_called, "durable-key branch must not fall through"
+        # No entry / blank key: falls through to the legacy origin path.
+        _KeyedStore.entry = None
+        runner._gateway_session_origin_for_id = lambda sid: self._src("alice")
+        assert await runner._resume_target_allowed(caller, "sess-1") is True
+
     def test_dm_cross_user_blocked_without_chat_id(self):
         # No-chat_id DM: build_session_key falls back to the participant id
         # (user_id_alt or user_id), so two different participants are different
