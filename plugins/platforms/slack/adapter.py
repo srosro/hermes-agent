@@ -8644,10 +8644,13 @@ class SlackAdapter(BasePlatformAdapter):
                 scope_id=team_id or None,
             )
 
-            # The store owns scope resolution (registered per-platform
-            # overrides, else gateway config) — reading its raw config here
-            # would diverge from the routing key for any override.
-            gspu, tspu = session_store.resolve_session_scope(source)
+            # This adapter's own seeded ``config.extra`` is the scope
+            # authority for keys it builds itself — ``_create_adapter`` seeds
+            # it from gateway config and registers the same values with the
+            # store, and unlike a store lookup it cannot miss on a synthetic
+            # source that carries no profile.
+            gspu = self.config.extra.get("group_sessions_per_user", True)
+            tspu = self.config.extra.get("thread_sessions_per_user", False)
 
             return build_session_key(
                 source,
@@ -8674,20 +8677,8 @@ class SlackAdapter(BasePlatformAdapter):
         each user's thread session rehydrates independently.
         """
         key = f"{team_id}:{channel_id}:{thread_ts}"
-        store = getattr(self, "_session_store", None)
-        if store is not None:
-            from gateway.session import SessionSource
-
-            source = SessionSource(
-                platform=Platform.SLACK,
-                chat_id=channel_id,
-                chat_type="group",
-                user_id=user_id,
-                thread_id=thread_ts,
-                scope_id=team_id or None,
-            )
-            if store.resolve_session_scope(source)[1]:
-                key = f"{key}:{user_id}"
+        if self.config.extra.get("thread_sessions_per_user", False):
+            key = f"{key}:{user_id}"
         return key
 
     def _mark_thread_rehydration_checked(

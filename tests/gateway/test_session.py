@@ -762,8 +762,23 @@ class TestWhatsAppSessionKeyConsistency:
         home = replace(work, profile="home")
 
         assert store.resolve_session_scope(work) == (False, False)
-        # Unregistered profile falls back to the gateway config (per-user).
+        # A single registration is unambiguous: a source stamped for a profile
+        # without its own discord adapter is still served by that one adapter
+        # (shared-ingress case), so its scope applies across profiles.
+        assert store.resolve_session_scope(home) == (False, False)
+        # A second profile registering the same platform makes the lookup
+        # profile-strict — the isolation the per-profile keying exists for.
+        store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+            profile="home",
+        )
         assert store.resolve_session_scope(home) == (True, False)
+        assert store.resolve_session_scope(work) == (False, False)
+        # A platform nobody registered still falls back to the gateway config.
+        telegram = replace(work, platform=Platform.TELEGRAM)
+        assert store.resolve_session_scope(telegram) == (True, False)
 
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""

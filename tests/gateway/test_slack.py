@@ -2964,7 +2964,14 @@ class TestThreadReplyHandling:
     @pytest.fixture()
     def adapter_with_session_store(self, mock_session_store):
         """Create an adapter with a mock session store attached."""
-        config = PlatformConfig(enabled=True, token="***")
+        # The adapter's own extra is the scope authority for keys it builds;
+        # per-user thread keys (this class's expected ``:U_USER`` suffixes)
+        # require thread_sessions_per_user here, not on the store mock.
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"group_sessions_per_user": True, "thread_sessions_per_user": True},
+        )
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()

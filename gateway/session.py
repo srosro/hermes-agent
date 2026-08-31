@@ -2050,17 +2050,30 @@ class SessionStore:
         """(group_sessions_per_user, thread_sessions_per_user) for a source.
 
         The single resolution order for session scoping: the source's
-        (profile, platform) registered adapter scope, else the gateway config.
-        Every key derivation and every guard that must stay in lock-step with
-        key shape (``is_shared_multi_user_session`` callers) resolves through
-        here.
+        (profile, platform) registered adapter scope; else, when exactly one
+        adapter registered the platform, that registration — ``source.profile``
+        names the destination session namespace, not necessarily the adapter
+        serving the source (the multiplex relay is shared ingress owned by the
+        active profile while stamping secondary profiles onto sources), and
+        with a single registration the owner is unambiguous; else the gateway
+        config. Profile match stays required only when several profiles
+        registered the same platform — the case per-profile isolation exists
+        for. Every key derivation and every guard that must stay in lock-step
+        with key shape (``is_shared_multi_user_session`` callers) resolves
+        through here.
         """
+        platform = getattr(source.platform, "value", str(source.platform))
         scope = self._platform_session_scope.get(
-            (
-                self._resolve_profile_for_key(source),
-                getattr(source.platform, "value", str(source.platform)),
-            )
+            (self._resolve_profile_for_key(source), platform)
         )
+        if scope is None:
+            platform_scopes = [
+                registered
+                for (_profile, registered_platform), registered in self._platform_session_scope.items()
+                if registered_platform == platform
+            ]
+            if len(platform_scopes) == 1:
+                scope = platform_scopes[0]
         if scope is not None:
             return scope
         return (
