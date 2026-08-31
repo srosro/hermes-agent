@@ -8629,9 +8629,6 @@ class SlackAdapter(BasePlatformAdapter):
                 ID prefix, because MPIM IDs start with ``"G"``, not
                 ``"D"``.
         """
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
-            return None
         try:
             from gateway.session import SessionSource, build_session_key
 

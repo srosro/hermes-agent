@@ -776,6 +776,10 @@ class TestWhatsAppSessionKeyConsistency:
         )
         assert store.resolve_session_scope(home) == (True, False)
         assert store.resolve_session_scope(work) == (False, False)
+        # Several disagreeing registrations + a profile owning none of them:
+        # stays strict and falls back to the gateway config.
+        guest = replace(work, profile="guest")
+        assert store.resolve_session_scope(guest) == (True, False)
         # A platform nobody registered still falls back to the gateway config.
         telegram = replace(work, platform=Platform.TELEGRAM)
         assert store.resolve_session_scope(telegram) == (True, False)
