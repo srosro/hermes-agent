@@ -3369,6 +3369,22 @@ class RelayAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
+        # Logical-platform shape normalization: the relay fronts platforms
+        # whose native overrides can't run here (sibling classes, and plugin
+        # adapters may not even be importable in a relay-only deployment), so
+        # the shared shape helpers apply the same key shapes the native
+        # adapters do. Discord/Telegram shapes are authoritative; chat-typed
+        # lanes (Slack, and any other dm/group platform) get the connector's
+        # chat-info answer as a refinement on top of their shape default,
+        # never as the sole source of truth.
+        if platform == Platform.DISCORD:
+            self.apply_discord_handoff_shape(source, effective_thread_id)
+            return source
+        if platform == Platform.TELEGRAM:
+            self.apply_telegram_handoff_shape(source, home, effective_thread_id)
+            return source
+        if platform == Platform.SLACK:
+            self.apply_slack_handoff_shape(source, new_thread_id)
         descriptor = None
         if self._transport is not None:
             resolver = getattr(self._transport, "descriptor_for_platform", None)
@@ -3389,16 +3405,7 @@ class RelayAdapter(BasePlatformAdapter):
                 )
             if info.get("type") in ("dm", "group"):
                 source.chat_type = info["type"]
-        # Logical-platform shape normalization: the relay fronts platforms
-        # whose native overrides can't run here (sibling classes, and plugin
-        # adapters may not even be importable in a relay-only deployment), so
-        # the shared shape helpers apply the same key shapes the native
-        # adapters do.
-        if platform == Platform.DISCORD:
-            self.apply_discord_handoff_shape(source, effective_thread_id)
-        elif platform == Platform.TELEGRAM:
-            self.apply_telegram_handoff_shape(source, home, effective_thread_id)
-        elif platform == Platform.SLACK:
+        if platform == Platform.SLACK:
             self.apply_handoff_participant(
                 source, home, self._session_store.resolve_session_scope(source)[1]
             )

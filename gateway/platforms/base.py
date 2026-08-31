@@ -4231,6 +4231,15 @@ class BasePlatformAdapter(ABC):
             source.chat_type = "group"
 
     @staticmethod
+    def apply_slack_handoff_shape(source: "SessionSource", new_thread_id: Optional[str]) -> None:
+        """Slack never keys ``"thread"``: organic replies are ``"dm"``/
+        ``"group"`` sources with the thread in ``thread_id``. This sets the
+        thread/no-thread default; the conversations API (native) or the
+        connector's chat info (relay) refines dm-vs-group on top when
+        available — the refinement is never the sole source of truth."""
+        source.chat_type = "group" if new_thread_id else "dm"
+
+    @staticmethod
     def apply_handoff_participant(source: "SessionSource", home: Any, thread_per_user: bool) -> None:
         """Under per-user thread isolation the home channel's authenticated
         user keys the participant — a ``system:handoff`` placeholder binds a

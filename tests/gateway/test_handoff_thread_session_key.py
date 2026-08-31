@@ -180,28 +180,6 @@ def test_slack_per_user_threads_substitute_the_home_user():
         _dest(adapter, Platform.SLACK, _home(Platform.SLACK, channel_id), thread_ts)
 
 
-def test_slack_per_user_threads_honor_the_gateway_level_flag():
-    """A deployment setting thread_sessions_per_user only at gateway level
-    (platform extra carries no key) must still substitute the participant —
-    the gate resolves extra-then-gateway-config like _create_adapter's
-    seeding."""
-    from types import SimpleNamespace
-
-    from gateway.config import GatewayConfig
-
-    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"})
-    adapter._session_store = SimpleNamespace(
-        resolve_session_scope=lambda source: (True, True)
-    )
-    dest = _dest(
-        adapter,
-        Platform.SLACK,
-        _home(Platform.SLACK, "C12345678", user_id="U123456"),
-        "1690000000.123456",
-    )
-    assert dest.user_id == "U123456"
-
-
 def test_slack_substitution_reads_scope_through_the_transport_ref(tmp_path):
     """The REAL resolver reads this adapter's extra through the weakref the
     base hook stamps — pinning the wiring the mutate-in-place overrides
@@ -242,6 +220,53 @@ def test_relay_fronted_discord_thread_keys_like_native():
     assert dest.chat_id == "T9"
     native = _dest(_discord_adapter(), Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
     assert build_session_key(dest) == build_session_key(native)
+
+
+def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
+    """A relay connector that cannot answer get_chat_info must still key a
+    Slack thread handoff "group" (never "thread") and substitute the
+    participant under per-user isolation — parity with the native adapter's
+    shape default."""
+    from types import SimpleNamespace
+
+    from gateway.relay.adapter import RelayAdapter
+
+    a = RelayAdapter.__new__(RelayAdapter)
+    a._transport = None
+    a._session_store = SimpleNamespace(
+        resolve_session_scope=lambda source: (True, True)
+    )
+    channel_id, thread_ts, user_id = "C12345678", "1690000000.123456", "U123456"
+    dest = _dest(
+        a, Platform.SLACK, _home(Platform.SLACK, channel_id, user_id=user_id), thread_ts
+    )
+    assert dest.chat_type == "group"
+    assert dest.user_id == user_id
+    organic = build_session_key(
+        SessionSource(
+            platform=Platform.SLACK,
+            chat_id=channel_id,
+            chat_type="group",
+            user_id=user_id,
+            thread_id=thread_ts,
+        ),
+        thread_sessions_per_user=True,
+    )
+    assert build_session_key(dest, thread_sessions_per_user=True) == organic
+
+
+def test_relay_fronted_telegram_lanes_key_like_native():
+    """Relay Telegram lanes get the native shapes: private-chat topics key as
+    DM topics with the real user id; forum/supergroup topics key "group"."""
+    from gateway.relay.adapter import RelayAdapter
+
+    a = RelayAdapter.__new__(RelayAdapter)
+    a._transport = None
+    private = _dest(a, Platform.TELEGRAM, _home(Platform.TELEGRAM, "123456789"), "77")
+    assert private.chat_type == "dm"
+    assert private.user_id == "123456789"
+    group = _dest(a, Platform.TELEGRAM, _home(Platform.TELEGRAM, "-1001234567890"), "77")
+    assert group.chat_type == "group"
 
 
 def test_telegram_private_chat_topic_keys_as_dm_topic():

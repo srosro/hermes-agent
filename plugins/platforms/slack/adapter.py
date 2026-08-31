@@ -2529,7 +2529,7 @@ class SlackAdapter(BasePlatformAdapter):
             profile_name=profile_name,
         )
         home_chat_id = str(home.chat_id)
-        dest_chat_type = "group" if new_thread_id else "dm"
+        self.apply_slack_handoff_shape(source, new_thread_id)
         info: Dict[str, Any] = {}
         try:
             info = await self.get_chat_info(home_chat_id) or {}
@@ -2537,11 +2537,10 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning(
                 "Handoff: Slack get_chat_info(%s) failed — keeping "
                 "chat_type=%r for the destination key",
-                home_chat_id, dest_chat_type, exc_info=True,
+                home_chat_id, source.chat_type, exc_info=True,
             )
         if info.get("type") in ("dm", "group"):
-            dest_chat_type = info["type"]
-        source.chat_type = dest_chat_type
+            source.chat_type = info["type"]
         source.scope_id = (
             getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
         )
