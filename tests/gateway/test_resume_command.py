@@ -37,7 +37,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
-    wire_session_scope(runner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
     runner._voice_mode = {}

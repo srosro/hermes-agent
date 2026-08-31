@@ -66,7 +66,7 @@ def _bind_lark_sdk_globals_when_installed():
     yield
 
 
-def wire_session_scope(runner, store=None):
+def wire_session_scope(runner):
     """Give a hand-built runner a session-store double for scope resolution.
 
     ``SessionStore.resolve_session_scope`` is a hard dependency of the inbound
@@ -82,8 +82,7 @@ def wire_session_scope(runner, store=None):
             getattr(runner.config, "thread_sessions_per_user", False),
         )
 
-    if store is None:
-        store = getattr(runner, "session_store", None)
+    store = getattr(runner, "session_store", None)
     if store is None:
         runner.session_store = SimpleNamespace(resolve_session_scope=_resolve)
     else:

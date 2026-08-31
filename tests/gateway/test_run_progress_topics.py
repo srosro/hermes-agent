@@ -461,8 +461,6 @@ def _make_runner(adapter):
     GatewayRunner = gateway_run.GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-
-    wire_session_scope(runner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
     runner._prefill_messages = []

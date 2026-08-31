@@ -36,8 +36,6 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-
-    wire_session_scope(runner)
     runner.config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True, token="***")}
     )
