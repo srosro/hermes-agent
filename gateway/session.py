@@ -2072,7 +2072,9 @@ class SessionStore:
                 for (_profile, registered_platform), registered in self._platform_session_scope.items()
                 if registered_platform == platform
             ]
-            if len(platform_scopes) == 1:
+            # Dedupe by value: several profiles registering the same platform
+            # with agreeing scope are as unambiguous as one registration.
+            if len(set(platform_scopes)) == 1:
                 scope = platform_scopes[0]
         if scope is not None:
             return scope
