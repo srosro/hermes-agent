@@ -1296,7 +1296,7 @@ class SessionStore:
         # ``BasePlatformAdapter.handle_message`` and a different one from this
         # store's routing — the split that delivered one group chat's messages
         # into per-sender sessions.
-        self._platform_session_scope: Dict[str, tuple[bool, bool]] = {}
+        self._platform_session_scope: Dict[tuple[str, str], tuple[bool, bool]] = {}
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
         # backward compatibility; disable via gateway.write_sessions_json.
@@ -2015,12 +2015,26 @@ class SessionStore:
 
         return recovered_profile == self._active_profile_name()
 
+    def _session_scope_profile_ns(self, profile: Optional[str]) -> str:
+        """Normalize a profile name to the scope-registry namespace.
+
+        Mirrors ``_resolve_profile_for_key``'s fallbacks so registration and
+        lookup land on the same key: ``None`` means the active profile under
+        multiplexing and the single ``default`` namespace otherwise.
+        """
+        if profile:
+            return profile
+        if getattr(self.config, "multiplex_profiles", False):
+            return self._active_profile_name()
+        return "default"
+
     def register_platform_session_scope(
         self,
         platform: str,
         *,
         group_sessions_per_user: bool,
         thread_sessions_per_user: bool,
+        profile: Optional[str] = None,
     ) -> None:
         """Record a platform adapter's resolved session-scope flags.
 
@@ -2028,9 +2042,13 @@ class SessionStore:
         ``config.extra`` (gateway config seeds those via ``setdefault``, so an
         adapter that doesn't override inherits the gateway values). This makes
         the store — the owner of routing keys — agree with the adapter about
-        key shape for that platform's sources.
+        key shape for that platform's sources. Keyed per (profile, platform):
+        under ``multiplex_profiles`` each profile configures its own adapter
+        for a platform, and one profile's override must not leak into
+        another's key shape.
         """
-        self._platform_session_scope[platform] = (
+        key = (self._session_scope_profile_ns(profile), platform)
+        self._platform_session_scope[key] = (
             bool(group_sessions_per_user),
             bool(thread_sessions_per_user),
         )
@@ -2038,13 +2056,17 @@ class SessionStore:
     def resolve_session_scope(self, source: SessionSource) -> tuple[bool, bool]:
         """(group_sessions_per_user, thread_sessions_per_user) for a source.
 
-        The single resolution order for session scoping: the source platform's
-        registered adapter scope, else the gateway config. Every key
-        derivation and every guard that must stay in lock-step with key shape
-        (``is_shared_multi_user_session`` callers) resolves through here.
+        The single resolution order for session scoping: the source's
+        (profile, platform) registered adapter scope, else the gateway config.
+        Every key derivation and every guard that must stay in lock-step with
+        key shape (``is_shared_multi_user_session`` callers) resolves through
+        here.
         """
+        profile_ns = self._session_scope_profile_ns(
+            self._resolve_profile_for_key(source)
+        )
         scope = self._platform_session_scope.get(
-            getattr(source.platform, "value", str(source.platform))
+            (profile_ns, getattr(source.platform, "value", str(source.platform)))
         )
         if scope is not None:
             return scope

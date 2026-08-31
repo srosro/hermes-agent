@@ -16096,7 +16096,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             try:
                 with _profile_runtime_scope(profile_home):
-                    adapter = self._create_adapter(platform, platform_config)
+                    adapter = self._create_adapter(
+                        platform, platform_config, profile=profile_name
+                    )
             except Exception as e:
                 logger.error(
                     "[MULTIPLEX] Profile '%s': _create_adapter('%s') raised %s",
@@ -16268,7 +16270,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         profile_config = load_gateway_config().platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
                             return
-                        adapter = self._create_adapter(platform, profile_config)
+                        adapter = self._create_adapter(
+                            platform, profile_config, profile=profile_name
+                        )
                         if adapter is None:
                             logger.warning(
                                 "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
@@ -16751,6 +16755,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         platform: Platform,
         config: Any,
+        profile: Optional[str] = None,
     ) -> Optional[BasePlatformAdapter]:
         """Create an adapter, then register its session scope with the store.
 
@@ -16777,6 +16782,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "thread_sessions_per_user",
                         getattr(self.config, "thread_sessions_per_user", False),
                     ),
+                    profile=profile,
                 )
         return adapter
 

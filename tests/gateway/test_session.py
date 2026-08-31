@@ -736,6 +736,31 @@ class TestWhatsAppSessionKeyConsistency:
             == "agent:main:telegram:group:guild-123:alice"
         )
 
+    def test_multiplex_profiles_keep_independent_platform_scope(self, store):
+        """Under multiplex_profiles each profile registers its own adapter for
+        a platform; one profile's scope override must not leak into another
+        profile's key shape."""
+        store.config.multiplex_profiles = True
+        store.register_platform_session_scope(
+            "discord",
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+            profile="work",
+        )
+
+        work = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            profile="work",
+        )
+        home = replace(work, profile="home")
+
+        assert store.resolve_session_scope(work) == (False, False)
+        # Unregistered profile falls back to the gateway config (per-user).
+        assert store.resolve_session_scope(home) == (True, False)
+
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(
