@@ -222,6 +222,35 @@ def test_relay_fronted_discord_thread_keys_like_native():
     assert build_session_key(dest) == build_session_key(native)
 
 
+def test_slack_gateway_level_flag_substitutes_via_the_real_resolver(tmp_path):
+    """A deployment setting thread_sessions_per_user only at gateway level
+    (adapter extra empty, so the transport-ref branch defers) must still
+    substitute the participant — the canonical resolver's gateway-config
+    fallback, exercised end to end."""
+    from unittest.mock import patch
+
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"})
+    adapter.config.extra.clear()
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(
+            sessions_dir=tmp_path, config=GatewayConfig(thread_sessions_per_user=True)
+        )
+    store._db = None
+    store._loaded = True
+    adapter._session_store = store
+
+    dest = _dest(
+        adapter,
+        Platform.SLACK,
+        _home(Platform.SLACK, "C12345678", user_id="U123456"),
+        "1690000000.123456",
+    )
+    assert dest.user_id == "U123456"
+
+
 def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
     """A relay connector that cannot answer get_chat_info must still key a
     Slack thread handoff "group" (never "thread") and substitute the
