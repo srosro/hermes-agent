@@ -19,6 +19,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
+from tests.gateway.conftest import wire_session_scope
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
@@ -209,6 +210,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
     event = _event(thread_id="topic-1")
     media_file = _allowed_media_path(tmp_path, monkeypatch, "pricelist.png")
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
     runner._reply_anchor_for_event = lambda event: event.message_id
 
@@ -253,6 +255,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
     event = _event(thread_id="source-topic")
     media_file = _allowed_media_path(tmp_path, monkeypatch, "threaded.png")
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner._thread_metadata_for_source = (
         lambda source, reply_to_message_id=None: {"thread_id": "recomputed-topic"}
     )
@@ -299,6 +302,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
 async def test_queued_followup_delivery_keeps_remote_image_url_in_text():
     event = _event(thread_id="topic-1")
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
     runner._reply_anchor_for_event = lambda event: event.message_id
 
@@ -340,6 +344,7 @@ async def test_queued_followup_delivery_keeps_bare_local_path_in_text(
     event = _event(thread_id="topic-1")
     media_file = _allowed_media_path(tmp_path, monkeypatch, "inspected.png")
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner._thread_metadata_for_source = (
         lambda source, reply_to_message_id=None: {"thread_id": "topic-1"}
     )
@@ -381,6 +386,7 @@ async def test_queued_followup_delivery_preserves_protected_media_example():
     """Inline-code MEDIA examples must remain visible after queued text cleanup."""
     event = _event(thread_id="topic-1")
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
     runner._reply_anchor_for_event = lambda event: event.message_id
 
@@ -422,6 +428,7 @@ async def test_queued_followup_delivery_skips_media_when_turn_failed():
     completed-turn path's ``not agent_result.get("failed")`` guard."""
     event = _event(thread_id="topic-1")
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
     runner._reply_anchor_for_event = lambda event: event.message_id
 
@@ -540,6 +547,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     runner._running_agents = {}
     runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    wire_session_scope(runner)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,

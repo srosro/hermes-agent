@@ -12,6 +12,7 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource, build_session_key
+from tests.gateway.conftest import wire_session_scope
 
 
 def _make_event(text="/resume", platform=Platform.TELEGRAM,
@@ -36,6 +37,7 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     """Create a bare GatewayRunner with a mock session_store and optional session_db."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
     runner._voice_mode = {}
@@ -59,6 +61,7 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.load_transcript.return_value = []
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
+    wire_session_scope(runner)
 
     return runner
 
@@ -409,6 +412,7 @@ class TestHandleSessionsCommand:
 
         runner = _make_runner(session_db=None, event=event)
         runner.session_store = store
+        wire_session_scope(runner)
         runner._async_session_store = AsyncSessionStore(store)
         runner._session_db = AsyncSessionDB(db)
 
@@ -481,6 +485,7 @@ class TestHandleSessionsCommand:
 
         runner = _make_runner(session_db=None, event=event)
         runner.session_store = store
+        wire_session_scope(runner)
         runner._async_session_store = AsyncSessionStore(store)
         runner._session_db = AsyncSessionDB(db)
 

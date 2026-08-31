@@ -4,17 +4,12 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
+from tests.gateway.conftest import wire_session_scope
 
 
 def _make_runner() -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
-    from types import SimpleNamespace as _SNS
-    runner.session_store = _SNS(
-        resolve_session_scope=lambda source: (
-            getattr(runner.config, "group_sessions_per_user", True),
-            getattr(runner.config, "thread_sessions_per_user", False),
-        )
-    )
+    wire_session_scope(runner)
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
     )

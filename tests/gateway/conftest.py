@@ -66,6 +66,31 @@ def _bind_lark_sdk_globals_when_installed():
     yield
 
 
+def wire_session_scope(runner, store=None):
+    """Give a hand-built runner a session-store double for scope resolution.
+
+    ``SessionStore.resolve_session_scope`` is a hard dependency of the inbound
+    path (it fails loudly on malformed wiring), so every test runner built
+    without ``__init__`` needs one. The double answers lazily from the
+    runner's own config flags — the real store's no-override fallback.
+    """
+    from types import SimpleNamespace
+
+    def _resolve(source):
+        return (
+            getattr(runner.config, "group_sessions_per_user", True),
+            getattr(runner.config, "thread_sessions_per_user", False),
+        )
+
+    if store is None:
+        store = getattr(runner, "session_store", None)
+    if store is None:
+        runner.session_store = SimpleNamespace(resolve_session_scope=_resolve)
+    else:
+        store.resolve_session_scope = _resolve
+    return runner.session_store
+
+
 def make_async_session_db(sync_mock=None):
     """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
     the facade works in tests. Returns (facade, sync_mock); configure return

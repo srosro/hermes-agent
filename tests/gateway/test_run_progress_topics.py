@@ -13,6 +13,7 @@ import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
+from tests.gateway.conftest import wire_session_scope
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -460,6 +461,8 @@ def _make_runner(adapter):
     GatewayRunner = gateway_run.GatewayRunner
 
     runner = object.__new__(GatewayRunner)
+
+    wire_session_scope(runner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
     runner._prefill_messages = []
@@ -471,6 +474,7 @@ def _make_runner(adapter):
     runner._running_agents = {}
     runner._session_run_generation = {}
     runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    wire_session_scope(runner)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,

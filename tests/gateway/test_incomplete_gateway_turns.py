@@ -11,6 +11,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from tests.gateway.conftest import wire_session_scope
 
 
 class CaptureSlackAdapter(BasePlatformAdapter):
@@ -80,6 +81,7 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    wire_session_scope(runner)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:slack:channel:C123:171717",
         session_id="sess-1",

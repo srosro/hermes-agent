@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.turn_lease import SessionTurnLeaseRegistry, TurnLeaseTimeoutError
+from tests.gateway.conftest import wire_session_scope
 
 
 def _run(coro):
@@ -457,6 +458,8 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
+
+    wire_session_scope(runner)
     # Bare runner without __init__: must be a safe no-op (pitfall #17).
     assert runner._release_turn_lease("key-a", 1) is False
 

@@ -28,6 +28,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from tests.gateway.conftest import wire_session_scope
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"
 
@@ -60,6 +61,8 @@ def _bootstrap(monkeypatch, tmp_path):
     runner.hooks.emit = AsyncMock()
 
     runner.session_store = MagicMock()
+
+    wire_session_scope(runner)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key=SESSION_KEY,
         session_id="sess-82888",

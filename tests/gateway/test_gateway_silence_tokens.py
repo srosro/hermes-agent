@@ -13,6 +13,7 @@ from gateway.response_filters import (
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
 )
+from tests.gateway.conftest import wire_session_scope
 
 
 def _source():
@@ -53,6 +54,8 @@ def _runner(monkeypatch, tmp_path):
     runner.hooks.emit = AsyncMock()
 
     runner.session_store = MagicMock()
+
+    wire_session_scope(runner)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:12345",
         session_id="sess-silent",

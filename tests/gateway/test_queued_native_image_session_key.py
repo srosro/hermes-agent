@@ -9,6 +9,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
+from tests.gateway.conftest import wire_session_scope
 
 
 _ONE_BY_ONE_PNG = base64.b64decode(
@@ -68,6 +69,7 @@ class CaptureQueuedNativeImageAgent:
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
+    wire_session_scope(runner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
     runner._prefill_messages = []

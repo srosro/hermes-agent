@@ -19074,8 +19074,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ) or ""
         # Resolve through the store so sender attribution stays in lock-step
         # with the key shape for platforms that override scope in their extra.
+        # Facade, not raw store: loop-side async code awaits every store call
+        # (test_gateway_async_code_uses_one_awaited_session_store_boundary).
         _group_sessions_per_user, _thread_sessions_per_user = (
-            self.session_store.resolve_session_scope(source)
+            await self.async_session_store.resolve_session_scope(source)
         )
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back

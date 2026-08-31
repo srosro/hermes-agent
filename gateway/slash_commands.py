@@ -1225,7 +1225,9 @@ class GatewaySlashCommandsMixin:
             # do NOT also require user-id equality (otherwise a co-member is
             # wrongly blocked from their own shared session). A per-user session
             # still requires the same owner.
-            _group_per_user, _thread_per_user = self.session_store.resolve_session_scope(source)
+            _group_per_user, _thread_per_user = (
+                await self.async_session_store.resolve_session_scope(source)
+            )
             shared = is_shared_multi_user_session(
                 source,
                 group_sessions_per_user=_group_per_user,

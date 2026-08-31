@@ -11,6 +11,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from tests.gateway.conftest import wire_session_scope
 
 
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
@@ -35,6 +36,8 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
+
+    wire_session_scope(runner)
     runner.config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True, token="***")}
     )
@@ -44,6 +47,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    wire_session_scope(runner)
     runner.session_store.get_or_create_session.return_value = session_entry
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True

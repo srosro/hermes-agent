@@ -18,6 +18,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tests.gateway.conftest import wire_session_scope
 
 
 def _source():
@@ -26,6 +27,7 @@ def _source():
 
 def _runner(adapter=None):
     runner = object.__new__(GatewayRunner)
+    wire_session_scope(runner)
     runner.config = SimpleNamespace(
         stt_enabled=True,
         group_sessions_per_user=True,

@@ -21,6 +21,7 @@ from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from tests.gateway.conftest import wire_session_scope
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:
@@ -65,6 +66,8 @@ def _make_runner(session_db=None):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
+
+    wire_session_scope(runner)
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
@@ -83,6 +86,8 @@ def _make_runner(session_db=None):
     )
 
     runner.session_store = MagicMock()
+
+    wire_session_scope(runner)
     runner.session_store._generate_session_key.side_effect = lambda source: build_session_key(
         source,
         group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
