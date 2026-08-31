@@ -1046,28 +1046,6 @@ def build_channel_continuity_note(
     )
 
 
-def resolve_session_scope_via(
-    store: Any,
-    config: Any,
-    source: SessionSource,
-) -> tuple[bool, bool]:
-    """(group_sessions_per_user, thread_sessions_per_user) via a store, safely.
-
-    The one guard for every caller that resolves session scope through a
-    possibly duck-typed/Mock store: a Mock's auto-vivified
-    ``resolve_session_scope`` returns an ununpackable Mock, so validate the
-    shape and fall back to the gateway config — the pre-registry behavior.
-    """
-    resolver = getattr(store, "resolve_session_scope", None) if store is not None else None
-    scope = resolver(source) if callable(resolver) else None
-    if isinstance(scope, tuple) and len(scope) == 2:
-        return scope
-    return (
-        getattr(config, "group_sessions_per_user", True),
-        getattr(config, "thread_sessions_per_user", False),
-    )
-
-
 def is_shared_multi_user_session(
     source: SessionSource,
     *,
@@ -1318,7 +1296,7 @@ class SessionStore:
         # ``BasePlatformAdapter.handle_message`` and a different one from this
         # store's routing — the split that delivered one group chat's messages
         # into per-sender sessions.
-        self._platform_session_scope: Dict[tuple[str, str], tuple[bool, bool]] = {}
+        self._platform_session_scope: Dict[tuple[Optional[str], str], tuple[bool, bool]] = {}
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
         # backward compatibility; disable via gateway.write_sessions_json.
@@ -2037,19 +2015,6 @@ class SessionStore:
 
         return recovered_profile == self._active_profile_name()
 
-    def _session_scope_profile_ns(self, profile: Optional[str]) -> str:
-        """Normalize a profile name to the scope-registry namespace.
-
-        Mirrors ``_resolve_profile_for_key``'s fallbacks so registration and
-        lookup land on the same key: ``None`` means the active profile under
-        multiplexing and the single ``default`` namespace otherwise.
-        """
-        if profile:
-            return profile
-        if getattr(self.config, "multiplex_profiles", False):
-            return self._active_profile_name()
-        return "default"
-
     def register_platform_session_scope(
         self,
         platform: str,
@@ -2067,9 +2032,15 @@ class SessionStore:
         key shape for that platform's sources. Keyed per (profile, platform):
         under ``multiplex_profiles`` each profile configures its own adapter
         for a platform, and one profile's override must not leak into
-        another's key shape.
+        another's key shape. Adapters are constructed inside their profile's
+        ``_profile_runtime_scope``, so the ambient ``_resolve_profile_for_key``
+        already names the creating profile; ``profile`` exists for callers
+        (and tests) that register outside that scope.
         """
-        key = (self._session_scope_profile_ns(profile), platform)
+        key = (
+            profile if profile is not None else self._resolve_profile_for_key(),
+            platform,
+        )
         self._platform_session_scope[key] = (
             bool(group_sessions_per_user),
             bool(thread_sessions_per_user),
@@ -2084,11 +2055,11 @@ class SessionStore:
         key shape (``is_shared_multi_user_session`` callers) resolves through
         here.
         """
-        profile_ns = self._session_scope_profile_ns(
-            self._resolve_profile_for_key(source)
-        )
         scope = self._platform_session_scope.get(
-            (profile_ns, getattr(source.platform, "value", str(source.platform)))
+            (
+                self._resolve_profile_for_key(source),
+                getattr(source.platform, "value", str(source.platform)),
+            )
         )
         if scope is not None:
             return scope
@@ -4304,15 +4275,24 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    session_store: Optional["SessionStore"] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
-    
+
     This is used to inject context into the agent's system prompt.
+    ``session_store`` keeps the shared-session label in lock-step with the
+    store's registered per-platform scope; without one, the gateway config
+    decides (the pre-registry behavior).
     """
+    if session_store is not None:
+        _group_per_user, _thread_per_user = session_store.resolve_session_scope(source)
+    else:
+        _group_per_user = getattr(config, "group_sessions_per_user", True)
+        _thread_per_user = getattr(config, "thread_sessions_per_user", False)
     connected = config.get_connected_platforms()
-    
+
     home_channels = {}
     for platform in connected:
         home = config.get_home_channel(platform)
@@ -4325,8 +4305,8 @@ def build_session_context(
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=_group_per_user,
+            thread_sessions_per_user=_thread_per_user,
         ),
     )
     

@@ -39,7 +39,6 @@ from gateway.session import (
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
-    resolve_session_scope_via,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
@@ -1070,9 +1069,7 @@ class GatewaySlashCommandsMixin:
         # Non-DM: scope by participant whenever the session key for this source
         # is per-user. is_shared_multi_user_session mirrors build_session_key's
         # isolation rules exactly, so the guard stays in lock-step with the key.
-        _group_per_user, _thread_per_user = resolve_session_scope_via(
-            self.session_store, self.config, current
-        )
+        _group_per_user, _thread_per_user = self.session_store.resolve_session_scope(current)
         shared = is_shared_multi_user_session(
             current,
             group_sessions_per_user=_group_per_user,
@@ -1228,9 +1225,7 @@ class GatewaySlashCommandsMixin:
             # do NOT also require user-id equality (otherwise a co-member is
             # wrongly blocked from their own shared session). A per-user session
             # still requires the same owner.
-            _group_per_user, _thread_per_user = resolve_session_scope_via(
-                self.session_store, self.config, source
-            )
+            _group_per_user, _thread_per_user = self.session_store.resolve_session_scope(source)
             shared = is_shared_multi_user_session(
                 source,
                 group_sessions_per_user=_group_per_user,
@@ -3255,11 +3250,10 @@ class GatewaySlashCommandsMixin:
         session_entry.last_prompt_tokens = 0
         # Evict the cached agent so the next turn rebuilds from the active-only
         # transcript and memory providers refresh their per-session caches.
-        try:
-            session_key = build_session_key(source)
-            self._evict_cached_agent(session_key)
-        except Exception as e:
-            logger.debug("undo: cached-agent eviction skipped: %s", e)
+        # The entry's own key is the routing truth — rebuilding one from the
+        # source with default flags evicts the wrong entry for any platform
+        # with a registered scope override.
+        self._evict_cached_agent(session_entry.session_key)
 
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text

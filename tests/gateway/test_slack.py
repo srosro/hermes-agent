@@ -2956,6 +2956,9 @@ class TestThreadReplyHandling:
         store._ensure_loaded = MagicMock()
         store.config = MagicMock()
         store.config.group_sessions_per_user = True
+        # The prior MagicMock config made thread_sessions_per_user truthy, so
+        # this fixture's expected keys are per-user thread keys — keep that.
+        store.resolve_session_scope = MagicMock(return_value=(True, True))
         return store
 
     @pytest.fixture()
@@ -3896,6 +3899,9 @@ class TestSlackThreadParentContext:
             }
         )
         runner.adapters = {}
+        runner.session_store = SimpleNamespace(
+            resolve_session_scope=lambda source: (True, False)
+        )
         prepared = await runner._prepare_inbound_message_text(
             event=msg_event,
             source=msg_event.source,

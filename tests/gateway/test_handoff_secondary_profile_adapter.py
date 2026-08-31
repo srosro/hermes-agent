@@ -79,6 +79,7 @@ def _make_multiplex_runner():
     # ``async_session_store`` is a derived property with no setter: it rebuilds
     # the facade whenever ``facade._store is not self.session_store``. Wiring
     # the mock as that ``_store`` is what makes the primed cache survive.
+    store.resolve_session_scope = lambda source: (True, False)
     runner.session_store = store
     runner._async_session_store = SimpleNamespace(
         _store=store,

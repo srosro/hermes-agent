@@ -2744,7 +2744,6 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
-    resolve_session_scope_via,
 )
 from gateway.delivery import (
     DeliveryRouter,
@@ -14357,11 +14356,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # at construction is invisible to a re-loaded config object, and a key
         # built from the wrong scope points switch_session at a session
         # nothing routes to.
-        _group_per_user, _thread_per_user = resolve_session_scope_via(
-            getattr(self.async_session_store, "_store", self.async_session_store),
-            self.config,
-            dest_source,
-        )
+        _group_per_user, _thread_per_user = getattr(
+            self.async_session_store, "_store", self.async_session_store
+        ).resolve_session_scope(dest_source)
         session_key = build_session_key(
             dest_source,
             group_sessions_per_user=_group_per_user,
@@ -16107,9 +16104,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             try:
                 with _profile_runtime_scope(profile_home):
-                    adapter = self._create_adapter(
-                        platform, platform_config, profile=profile_name
-                    )
+                    adapter = self._create_adapter(platform, platform_config)
             except Exception as e:
                 logger.error(
                     "[MULTIPLEX] Profile '%s': _create_adapter('%s') raised %s",
@@ -16281,9 +16276,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         profile_config = load_gateway_config().platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
                             return
-                        adapter = self._create_adapter(
-                            platform, profile_config, profile=profile_name
-                        )
+                        adapter = self._create_adapter(platform, profile_config)
                         if adapter is None:
                             logger.warning(
                                 "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
@@ -16766,7 +16759,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         platform: Platform,
         config: Any,
-        profile: Optional[str] = None,
     ) -> Optional[BasePlatformAdapter]:
         """Create an adapter, then register its session scope with the store.
 
@@ -16793,7 +16785,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "thread_sessions_per_user",
                         getattr(self.config, "thread_sessions_per_user", False),
                     ),
-                    profile=profile,
                 )
         return adapter
 
@@ -19083,8 +19074,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ) or ""
         # Resolve through the store so sender attribution stays in lock-step
         # with the key shape for platforms that override scope in their extra.
-        _group_sessions_per_user, _thread_sessions_per_user = resolve_session_scope_via(
-            getattr(self, "session_store", None), self.config, source
+        _group_sessions_per_user, _thread_sessions_per_user = (
+            self.session_store.resolve_session_scope(source)
         )
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
@@ -19948,7 +19939,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             })
         
         # Build session context
-        context = build_session_context(source, self.config, session_entry)
+        context = build_session_context(
+            source, self.config, session_entry, session_store=self.session_store
+        )
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)

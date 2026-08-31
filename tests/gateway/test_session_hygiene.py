@@ -258,6 +258,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -420,6 +421,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -554,6 +556,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:dm:12345",
         session_id="sess-timeout",
@@ -724,6 +727,7 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:dm:12345",
         session_id="sess-turnhold",
@@ -901,6 +905,7 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:dm:12345",
         session_id="sess-idle-timeout",
@@ -1056,6 +1061,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:private:12345",
         session_id="sess-1",
@@ -1190,6 +1196,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:private:12345",
         session_id="sess-1",
@@ -1283,6 +1290,7 @@ def _make_progress_runner(monkeypatch, tmp_path, agent_cls, cfg_text):
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:dm:12345",
         session_id="sess-progress",
@@ -1371,6 +1379,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
+    runner.session_store.resolve_session_scope.return_value = (True, False)
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:dm:12345",
         session_id=session_id,

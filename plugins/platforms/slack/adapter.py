@@ -8644,18 +8644,10 @@ class SlackAdapter(BasePlatformAdapter):
                 scope_id=team_id or None,
             )
 
-            # Read session isolation settings from the store's config
-            store_cfg = getattr(session_store, "config", None)
-            gspu = (
-                getattr(store_cfg, "group_sessions_per_user", True)
-                if store_cfg
-                else True
-            )
-            tspu = (
-                getattr(store_cfg, "thread_sessions_per_user", False)
-                if store_cfg
-                else False
-            )
+            # The store owns scope resolution (registered per-platform
+            # overrides, else gateway config) — reading its raw config here
+            # would diverge from the routing key for any override.
+            gspu, tspu = session_store.resolve_session_scope(source)
 
             return build_session_key(
                 source,
@@ -8682,9 +8674,20 @@ class SlackAdapter(BasePlatformAdapter):
         each user's thread session rehydrates independently.
         """
         key = f"{team_id}:{channel_id}:{thread_ts}"
-        store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
-        if getattr(store_cfg, "thread_sessions_per_user", False):
-            key = f"{key}:{user_id}"
+        store = getattr(self, "_session_store", None)
+        if store is not None:
+            from gateway.session import SessionSource
+
+            source = SessionSource(
+                platform=Platform.SLACK,
+                chat_id=channel_id,
+                chat_type="group",
+                user_id=user_id,
+                thread_id=thread_ts,
+                scope_id=team_id or None,
+            )
+            if store.resolve_session_scope(source)[1]:
+                key = f"{key}:{user_id}"
         return key
 
     def _mark_thread_rehydration_checked(

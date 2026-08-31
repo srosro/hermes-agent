@@ -2,6 +2,7 @@
 import json
 import pytest
 from dataclasses import replace
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -313,6 +314,9 @@ class TestSenderPrefixWithBackfill:
 
         r = GatewayRunner.__new__(GatewayRunner)
         r.config = GatewayConfig(group_sessions_per_user=False)
+        r.session_store = SimpleNamespace(
+            resolve_session_scope=lambda source: (False, False)
+        )
         r.adapters = {}
         r._model = "test-model"
         r._base_url = ""
