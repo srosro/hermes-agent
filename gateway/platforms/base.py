@@ -4292,11 +4292,24 @@ class BasePlatformAdapter(ABC):
         if not per_user:
             return
         if not getattr(home, "user_id", None):
-            raise RuntimeError(
-                "handoff under per-participant session scope requires the "
-                "home channel's user_id to key the participant — re-run "
-                "/sethome in the target conversation"
+            if threaded:
+                raise RuntimeError(
+                    "thread handoff under per-participant session scope "
+                    "requires the home channel's user_id to key the "
+                    "participant — re-run /sethome in the target conversation"
+                )
+            # Non-threaded fallback contract (run.py): a handoff whose thread
+            # creation failed or was unsupported must still LAND. A legacy
+            # home without a recorded user keys the placeholder — the same
+            # stranding it always had, now visible — rather than hard-fail
+            # a previously working path.
+            logger.warning(
+                "Handoff: home %s recorded no user_id but the session key is "
+                "per-participant — binding the system:handoff placeholder; "
+                "re-run /sethome in the target conversation to fix",
+                getattr(home, "chat_id", "?"),
             )
+            return
         source.user_id = str(home.user_id)
 
     async def build_handoff_dest_source(
