@@ -23,7 +23,7 @@ from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 
 
-def _home(platform, chat_id, scope_id=None, user_id=None, thread_id=None):
+def _home(platform, chat_id, scope_id=None, user_id=None, thread_id=None, chat_type=None):
     return HomeChannel(
         platform=platform,
         chat_id=str(chat_id),
@@ -31,6 +31,7 @@ def _home(platform, chat_id, scope_id=None, user_id=None, thread_id=None):
         thread_id=thread_id,
         user_id=user_id,
         scope_id=scope_id,
+        chat_type=chat_type,
     )
 
 
@@ -281,33 +282,46 @@ def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
     assert build_session_key(dest, thread_sessions_per_user=True) == organic
 
 
-def test_relay_fronted_telegram_lanes_key_like_native():
-    """Relay Telegram lanes get the native shapes: private-chat topics key as
-    DM topics with the real user id; forum/supergroup topics key "group"."""
+def _telegram_adapter():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    return TelegramAdapter.__new__(TelegramAdapter)
+
+
+def _relay_adapter():
     from gateway.relay.adapter import RelayAdapter
 
     a = RelayAdapter.__new__(RelayAdapter)
     a._transport = None
-    private = _dest(a, Platform.TELEGRAM, _home(Platform.TELEGRAM, "123456789"), "77")
+    return a
+
+
+@pytest.mark.parametrize(
+    "adapter_factory", [_telegram_adapter, _relay_adapter], ids=["native", "relay"]
+)
+def test_telegram_handoff_shape(adapter_factory):
+    """One shape table, both transports: private-chat topics key as DM topics
+    with the real user id; forum/supergroup topics key "group"."""
+    adapter = adapter_factory()
+    private = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, "123456789"), "77")
     assert private.chat_type == "dm"
     assert private.user_id == "123456789"
-    group = _dest(a, Platform.TELEGRAM, _home(Platform.TELEGRAM, "-1001234567890"), "77")
+    group = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, "-1001234567890"), "77")
     assert group.chat_type == "group"
 
 
-def test_telegram_private_chat_topic_keys_as_dm_topic():
-    """A handoff-created topic in a private chat must use the DM-topic source
-    shape (real user id == chat id) so the user's next message shares it."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+def test_recorded_home_identity_beats_inference():
+    """/sethome-recorded chat_type is canonical: an MPIM home (G… prefix,
+    recorded "dm") keys dm without any lookup, and a Discord env home
+    recorded "group" keys group with no workspace scope or lookup."""
+    slack = _slack_adapter(raise_lookup=True)
+    mpim = _dest(
+        slack, Platform.SLACK, _home(Platform.SLACK, "G0MPIMPIM", chat_type="dm"), None
+    )
+    assert mpim.chat_type == "dm"
 
-    adapter = TelegramAdapter.__new__(TelegramAdapter)
-    private_chat = "123456789"  # positive id = private chat
-    dest = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, private_chat), "77")
-    assert dest.chat_type == "dm"
-    assert dest.user_id == private_chat
-
-    group_chat = "-1001234567890"
-    dest = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, group_chat), "77")
-    # Organic supergroup topic replies arrive as "group" with the topic in
-    # thread_id — a generic "thread" key would strand the transcript.
+    discord_home = _home(Platform.DISCORD, "111222333", chat_type="group")
+    dest = _dest(_discord_adapter(), Platform.DISCORD, discord_home, None)
     assert dest.chat_type == "group"
+
+

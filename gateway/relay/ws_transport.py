@@ -750,9 +750,17 @@ class WebSocketRelayTransport:
             frame_type="outbound",
             platform=platform,
         )
+        # A failed lookup must RAISE, never mint a plausible "dm": callers
+        # keep their identity-derived shape on the exception path, and a
+        # timed-out / disconnected / rejected lookup silently answering "dm"
+        # binds a session the next organic reply cannot resume.
+        if result.get("success") is False:
+            raise RuntimeError(
+                f"relay get_chat_info({chat_id}) failed: {result.get('error') or 'unknown error'}"
+            )
         # The connector answers chat-info inside the outbound_result envelope.
         info = result.get("chat_info") or result
-        return {"name": info.get("name", chat_id), "type": info.get("type", "dm")}
+        return {"name": info.get("name", chat_id), "type": info.get("type", "unknown")}
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
         await self._send({"type": "interrupt", "session_key": session_key, "reason": reason})

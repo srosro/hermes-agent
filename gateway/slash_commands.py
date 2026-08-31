@@ -3287,6 +3287,14 @@ class GatewaySlashCommandsMixin:
                 if getattr(source, "scope_id", None)
                 else None
             ),
+            # The event's own chat type IS the conversation identity —
+            # recorded here so handoffs consume it instead of re-inferring
+            # from id prefixes / scope presence / chat-info lookups.
+            chat_type=(
+                str(source.chat_type)
+                if getattr(source, "chat_type", None)
+                else None
+            ),
         )
 
         # config.yaml is canonical because it can persist the authenticated

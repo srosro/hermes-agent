@@ -3378,13 +3378,20 @@ class RelayAdapter(BasePlatformAdapter):
         # chat-info answer as a refinement on top of their shape default,
         # never as the sole source of truth.
         if platform == Platform.DISCORD:
-            self.apply_discord_handoff_shape(source, effective_thread_id)
+            self.apply_discord_handoff_shape(source, home, effective_thread_id)
             return source
         if platform == Platform.TELEGRAM:
             self.apply_telegram_handoff_shape(source, home, effective_thread_id)
             return source
         if platform == Platform.SLACK:
-            self.apply_slack_handoff_shape(source, new_thread_id)
+            self.apply_slack_handoff_shape(source, home, new_thread_id)
+        if getattr(home, "chat_type", None):
+            # Recorded canonical identity — no connector lookup needed.
+            if platform == Platform.SLACK:
+                self.apply_handoff_participant(
+                    source, home, self._session_store.resolve_session_scope(source)[1]
+                )
+            return source
         descriptor = None
         if self._transport is not None:
             resolver = getattr(self._transport, "descriptor_for_platform", None)
@@ -3395,10 +3402,7 @@ class RelayAdapter(BasePlatformAdapter):
                 # answer decides SESSION IDENTITY, so a resolver that knows
                 # the lanes and holds none for this platform means no
                 # negotiated capabilities — never borrow the primary's.
-                try:
-                    descriptor = resolver(platform.value)
-                except Exception:  # noqa: BLE001 - capability lookup must never break a handoff
-                    descriptor = None
+                descriptor = resolver(platform.value)
             else:
                 descriptor = self.descriptor
         if descriptor is not None and descriptor.supports_op("get_chat_info"):

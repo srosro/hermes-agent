@@ -7370,7 +7370,17 @@ class DiscordAdapter(BasePlatformAdapter):
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
         )
-        self.apply_discord_handoff_shape(source, effective_thread_id)
+        self.apply_discord_handoff_shape(source, home, effective_thread_id)
+        if source.chat_type == "dm" and not getattr(home, "chat_type", None):
+            # Legacy env-configured guild home: no recorded identity and no
+            # workspace scope. Resolve once through the live channel — a
+            # non-DM answer means organic replies key "group".
+            try:
+                info = await self.get_chat_info(str(home.chat_id)) or {}
+            except Exception:
+                info = {}
+            if info.get("type") in ("group", "channel", "thread"):
+                source.chat_type = "group"
         return source
 
     async def create_handoff_thread(

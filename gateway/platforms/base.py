@@ -4206,7 +4206,9 @@ class BasePlatformAdapter(ABC):
         return None
 
     @staticmethod
-    def apply_discord_handoff_shape(source: "SessionSource", effective_thread_id: Optional[str]) -> None:
+    def apply_discord_handoff_shape(
+        source: "SessionSource", home: Any, effective_thread_id: Optional[str]
+    ) -> None:
         """Discord threads key on the thread's OWN id (organic in-thread
         messages carry ``chat_id == thread id``). Shared by the native
         Discord override and the relay's Discord lane — module-level so the
@@ -4221,7 +4223,11 @@ class BasePlatformAdapter(ABC):
             source.chat_type = "thread"
             source.chat_id = str(effective_thread_id)
             source.user_id = "system:handoff"
+        elif getattr(home, "chat_type", None) in ("dm", "group"):
+            source.chat_type = home.chat_type
         elif source.scope_id:
+            # Legacy inference for homes recorded before /sethome captured
+            # identity: a workspace scope means a guild conversation.
             source.chat_type = "group"
 
     @staticmethod
@@ -4239,7 +4245,9 @@ class BasePlatformAdapter(ABC):
             source.chat_type = "group"
 
     @staticmethod
-    def apply_slack_handoff_shape(source: "SessionSource", new_thread_id: Optional[str]) -> None:
+    def apply_slack_handoff_shape(
+        source: "SessionSource", home: Any, new_thread_id: Optional[str]
+    ) -> None:
         """Slack never keys ``"thread"``: organic replies are ``"dm"``/
         ``"group"`` sources with the thread in ``thread_id``.
 
@@ -4251,6 +4259,12 @@ class BasePlatformAdapter(ABC):
         prefix falls back to the thread heuristic — the least-wrong guess
         for a shape Slack has never minted.
         """
+        if getattr(home, "chat_type", None) in ("dm", "group"):
+            # Recorded canonical identity from /sethome — no inference
+            # needed. Covers MPIMs, whose G… prefix would otherwise
+            # mis-infer "group" while organic mpim replies bind "dm".
+            source.chat_type = home.chat_type
+            return
         chat_id = str(source.chat_id)
         if chat_id.startswith("D"):
             source.chat_type = "dm"
@@ -4302,10 +4316,14 @@ class BasePlatformAdapter(ABC):
         """
         from gateway.session import SessionSource
 
+        recorded = getattr(home, "chat_type", None)
         if new_thread_id:
             chat_type, user_id = "thread", "system:handoff"
         else:
-            chat_type, user_id = "dm", "system:handoff"
+            # Canonical identity recorded at /sethome wins; "dm" is the
+            # legacy default for homes recorded before identity capture.
+            chat_type = recorded if recorded in ("dm", "group") else "dm"
+            user_id = "system:handoff"
         source = SessionSource(
             platform=platform,
             chat_id=str(home.chat_id),

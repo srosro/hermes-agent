@@ -2529,18 +2529,22 @@ class SlackAdapter(BasePlatformAdapter):
             profile_name=profile_name,
         )
         home_chat_id = str(home.chat_id)
-        self.apply_slack_handoff_shape(source, new_thread_id)
-        info: Dict[str, Any] = {}
-        try:
-            info = await self.get_chat_info(home_chat_id) or {}
-        except Exception:
-            logger.warning(
-                "Handoff: Slack get_chat_info(%s) failed — keeping "
-                "chat_type=%r for the destination key",
-                home_chat_id, source.chat_type, exc_info=True,
-            )
-        if info.get("type") in ("dm", "group"):
-            source.chat_type = info["type"]
+        self.apply_slack_handoff_shape(source, home, new_thread_id)
+        if not getattr(home, "chat_type", None):
+            # Legacy home without recorded identity: the conversations API
+            # refines the prefix inference (it distinguishes mpim from
+            # private channels, which both mint G… ids).
+            info: Dict[str, Any] = {}
+            try:
+                info = await self.get_chat_info(home_chat_id) or {}
+            except Exception:
+                logger.warning(
+                    "Handoff: Slack get_chat_info(%s) failed — keeping "
+                    "chat_type=%r for the destination key",
+                    home_chat_id, source.chat_type, exc_info=True,
+                )
+            if info.get("type") in ("dm", "group"):
+                source.chat_type = info["type"]
         source.scope_id = (
             getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
         )
@@ -5072,7 +5076,9 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             result = await self._get_client(chat_id).conversations_info(channel=chat_id)
             channel = result.get("channel", {})
-            is_dm = channel.get("is_im", False)
+            # MPIMs bind organic replies as DMs (channel_type "mpim" → "dm"),
+            # so chat info must agree or handoff/organic keys fork.
+            is_dm = channel.get("is_im", False) or channel.get("is_mpim", False)
             return {
                 "name": channel.get("name", chat_id),
                 "type": "dm" if is_dm else "group",

@@ -489,7 +489,12 @@ class HomeChannel:
     # authorization boundary and resolves them against its authoritative stores.
     user_id: Optional[str] = None
     scope_id: Optional[str] = None
-    
+    # Canonical conversation identity, recorded from the /sethome event's own
+    # source ("dm"/"group"/"thread"). One recorded value replaces per-platform
+    # inference (Slack id prefixes, Discord scope presence, relay chat-info)
+    # at handoff time; legacy homes without it fall back to that inference.
+    chat_type: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "platform": self.platform.value,
@@ -502,6 +507,8 @@ class HomeChannel:
             result["user_id"] = self.user_id
         if self.scope_id:
             result["scope_id"] = self.scope_id
+        if self.chat_type:
+            result["chat_type"] = self.chat_type
         return result
     
     @classmethod
@@ -513,6 +520,7 @@ class HomeChannel:
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
             user_id=str(data["user_id"]) if data.get("user_id") else None,
             scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
+            chat_type=str(data["chat_type"]) if data.get("chat_type") else None,
         )
 
 
