@@ -2016,13 +2016,33 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
         ]
 
+    def _env_home_channel(platform, chat_id, name, thread_id, existing):
+        """Env-mirror home overlay preserving same-home provenance.
+
+        The env mirror carries only chat id / name / thread; /sethome records
+        chat_type, user_id, and scope_id in YAML. When the env names the SAME
+        chat, dropping those on reload re-strands the identity /sethome
+        captured (a Discord guild home keys as a DM, an MPIM as a group).
+        """
+        same = existing is not None and existing.chat_id == chat_id
+        return HomeChannel(
+            platform=platform,
+            chat_id=chat_id,
+            name=name,
+            thread_id=thread_id,
+            user_id=existing.user_id if same else None,
+            scope_id=existing.scope_id if same else None,
+            chat_type=existing.chat_type if same else None,
+        )
+
     telegram_home = getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
-        config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-            platform=Platform.TELEGRAM,
-            chat_id=telegram_home,
-            name=getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
-            thread_id=getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+        config.platforms[Platform.TELEGRAM].home_channel = _env_home_channel(
+            Platform.TELEGRAM,
+            telegram_home,
+            getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
+            getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+            config.platforms[Platform.TELEGRAM].home_channel,
         )
     
     # Discord
@@ -2033,11 +2053,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     discord_home = getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
-        config.platforms[Platform.DISCORD].home_channel = HomeChannel(
-            platform=Platform.DISCORD,
-            chat_id=discord_home,
-            name=getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
-            thread_id=getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
+        config.platforms[Platform.DISCORD].home_channel = _env_home_channel(
+            Platform.DISCORD,
+            discord_home,
+            getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
+            getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
+            config.platforms[Platform.DISCORD].home_channel,
         )
     
     # Reply threading mode for Discord (off/first/all)
@@ -2062,11 +2083,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
     whatsapp_home = getenv("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
-        config.platforms[Platform.WHATSAPP].home_channel = HomeChannel(
-            platform=Platform.WHATSAPP,
-            chat_id=whatsapp_home,
-            name=getenv("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
-            thread_id=getenv("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
+        config.platforms[Platform.WHATSAPP].home_channel = _env_home_channel(
+            Platform.WHATSAPP,
+            whatsapp_home,
+            getenv("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
+            getenv("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
+            config.platforms[Platform.WHATSAPP].home_channel,
         )
 
     # WhatsApp Cloud API (official Business Platform via Meta).
@@ -2154,15 +2176,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             Platform.SLACK,
             PlatformConfig(enabled=False),
         )
-        existing_home = slack_config.home_channel
-        same_home = existing_home is not None and existing_home.chat_id == slack_home
-        slack_config.home_channel = HomeChannel(
-            platform=Platform.SLACK,
-            chat_id=slack_home,
-            name=getenv("SLACK_HOME_CHANNEL_NAME", ""),
-            thread_id=getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
-            user_id=existing_home.user_id if existing_home and same_home else None,
-            scope_id=existing_home.scope_id if existing_home and same_home else None,
+        slack_config.home_channel = _env_home_channel(
+            Platform.SLACK,
+            slack_home,
+            getenv("SLACK_HOME_CHANNEL_NAME", ""),
+            getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
+            slack_config.home_channel,
         )
     
     # Signal

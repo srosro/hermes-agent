@@ -1255,6 +1255,72 @@ class TestHomeChannelEnvOverrides:
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
 
+    def test_env_overlay_preserves_same_home_recorded_identity(self):
+        """The env mirror carries no chat_type/user_id/scope_id; when it names
+        the SAME chat /sethome recorded, reload must keep that provenance —
+        dropping it re-strands the identity (a Slack MPIM home reverts to
+        "group" inference, a Discord guild home to "dm")."""
+        cases = [
+            (
+                Platform.SLACK,
+                HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="G0MPIMPIM",
+                    name="mp",
+                    user_id="U1",
+                    scope_id="T_TEAM",
+                    chat_type="dm",
+                ),
+                {"SLACK_HOME_CHANNEL": "G0MPIMPIM"},
+                "dm",
+            ),
+            (
+                Platform.DISCORD,
+                HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="111222333",
+                    name="guild-general",
+                    scope_id="999888777",
+                    chat_type="group",
+                ),
+                {"DISCORD_HOME_CHANNEL": "111222333"},
+                "group",
+            ),
+        ]
+        for platform, recorded_home, env, expected_type in cases:
+            config = GatewayConfig(
+                platforms={
+                    platform: PlatformConfig(
+                        enabled=True, token="***", home_channel=recorded_home
+                    )
+                }
+            )
+            with patch.dict(os.environ, env, clear=True):
+                _apply_env_overrides(config)
+            home = config.platforms[platform].home_channel
+            assert home.chat_type == expected_type, platform.value
+            assert home.scope_id == recorded_home.scope_id, platform.value
+            assert home.user_id == recorded_home.user_id, platform.value
+        # A DIFFERENT chat in the env mirror must NOT inherit the old
+        # home's identity.
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    home_channel=HomeChannel(
+                        platform=Platform.DISCORD,
+                        chat_id="111222333",
+                        name="old",
+                        chat_type="group",
+                    ),
+                )
+            }
+        )
+        with patch.dict(os.environ, {"DISCORD_HOME_CHANNEL": "444555666"}, clear=True):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].home_channel.chat_type is None
+
 
 class TestMultiplexProfilesEnvOverride:
     """GATEWAY_MULTIPLEX_PROFILES env override — the 3-tier precedence chain.
