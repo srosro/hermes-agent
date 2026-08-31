@@ -1039,6 +1039,18 @@ class GatewaySlashCommandsMixin:
             return False
         if origin.chat_id != current.chat_id:
             return False
+        # Profile namespace and Slack workspace are part of session identity
+        # (build_session_key keys on both), so a matching chat id in another
+        # profile or workspace is a DIFFERENT session — without these, /resume
+        # could rebind a caller to a transcript across that boundary.
+        if str(getattr(current, "profile", "") or "") != str(
+            getattr(origin, "profile", "") or ""
+        ):
+            return False
+        if str(getattr(current, "scope_id", "") or "") != str(
+            getattr(origin, "scope_id", "") or ""
+        ):
+            return False
         # thread_id is part of the session key for every chat type when present
         # (build_session_key appends it unconditionally), so a session in one
         # thread is a DIFFERENT session from another thread of the same parent
@@ -1134,6 +1146,14 @@ class GatewaySlashCommandsMixin:
         try:
             row = await self._session_db.get_session(target_id) or {}
         except Exception:
+            return False
+        # A row that recorded its routing key is checked directly against the
+        # caller's derived key — one comparison in lock-step with
+        # build_session_key across profile namespace, workspace scope, chat,
+        # thread, and participant. Blank/legacy rows fall through to the
+        # field-by-field scoping below.
+        row_key = str(row.get("session_key") or "")
+        if row_key and row_key != self._session_key_for_source(source):
             return False
         caller_src = source.platform.value if source.platform else None
         row_src = row.get("source")

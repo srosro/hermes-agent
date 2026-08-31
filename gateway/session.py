@@ -1198,12 +1198,15 @@ def build_session_key(
     if effective_thread_id:
         key_parts.append(effective_thread_id)
 
-    # In threads, default to shared sessions (all participants see the same
-    # conversation).  Per-user isolation only applies when explicitly enabled
-    # via thread_sessions_per_user, or when there is no thread (regular group).
-    isolate_user = group_sessions_per_user
-    if effective_thread_id and not thread_sessions_per_user:
-        isolate_user = False
+    # In threads, thread_sessions_per_user alone decides participant
+    # isolation — matching is_shared_multi_user_session, which returns
+    # `not thread_sessions_per_user` for any threaded source regardless of
+    # the group flag. Deriving the thread case from group_sessions_per_user
+    # left (group=False, thread=True) building a shared key while every
+    # guard treated the session as per-user.
+    isolate_user = (
+        thread_sessions_per_user if effective_thread_id else group_sessions_per_user
+    )
 
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
@@ -2049,33 +2052,40 @@ class SessionStore:
     def resolve_session_scope(self, source: SessionSource) -> tuple[bool, bool]:
         """(group_sessions_per_user, thread_sessions_per_user) for a source.
 
-        The single resolution order for session scoping: the source's
-        (profile, platform) registered adapter scope; else, when exactly one
-        adapter registered the platform, that registration — ``source.profile``
-        names the destination session namespace, not necessarily the adapter
-        serving the source (the multiplex relay is shared ingress owned by the
-        active profile while stamping secondary profiles onto sources), and
-        with a single registration the owner is unambiguous; else the gateway
-        config. Profile match stays required only when several profiles
-        registered the same platform — the case per-profile isolation exists
-        for. Every key derivation and every guard that must stay in lock-step
-        with key shape (``is_shared_multi_user_session`` callers) resolves
-        through here.
+        The single resolution order for session scoping: the source's live
+        receiving adapter (``build_source`` stamps a transport ref on every
+        inbound source — the transport is authoritative for its own turn, and
+        its seeded ``config.extra`` carries the resolved scope), else the
+        (profile, platform) registered scope for sources built away from any
+        adapter (cron and handoff destinations, persisted origins), else the
+        gateway config. ``source.profile`` names the destination session
+        namespace, never scope ownership — an adapter routing into another
+        profile's namespace still scopes by its own transport. Every key
+        derivation and every guard that must stay in lock-step with key shape
+        (``is_shared_multi_user_session`` callers) resolves through here.
         """
-        platform = getattr(source.platform, "value", str(source.platform))
+        adapter_ref = getattr(source, "_transport_adapter_ref", None)
+        adapter = adapter_ref() if callable(adapter_ref) else None
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        if isinstance(extra, dict) and (
+            "group_sessions_per_user" in extra or "thread_sessions_per_user" in extra
+        ):
+            return (
+                bool(extra.get(
+                    "group_sessions_per_user",
+                    getattr(self.config, "group_sessions_per_user", True),
+                )),
+                bool(extra.get(
+                    "thread_sessions_per_user",
+                    getattr(self.config, "thread_sessions_per_user", False),
+                )),
+            )
         scope = self._platform_session_scope.get(
-            (self._resolve_profile_for_key(source), platform)
+            (
+                self._resolve_profile_for_key(source),
+                getattr(source.platform, "value", str(source.platform)),
+            )
         )
-        if scope is None:
-            platform_scopes = [
-                registered
-                for (_profile, registered_platform), registered in self._platform_session_scope.items()
-                if registered_platform == platform
-            ]
-            # Dedupe by value: several profiles registering the same platform
-            # with agreeing scope are as unambiguous as one registration.
-            if len(set(platform_scopes)) == 1:
-                scope = platform_scopes[0]
         if scope is not None:
             return scope
         return (

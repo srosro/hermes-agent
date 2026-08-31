@@ -17,6 +17,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
 
@@ -762,27 +763,66 @@ class TestWhatsAppSessionKeyConsistency:
         home = replace(work, profile="home")
 
         assert store.resolve_session_scope(work) == (False, False)
-        # A single registration is unambiguous: a source stamped for a profile
-        # without its own discord adapter is still served by that one adapter
-        # (shared-ingress case), so its scope applies across profiles.
-        assert store.resolve_session_scope(home) == (False, False)
-        # A second profile registering the same platform makes the lookup
-        # profile-strict — the isolation the per-profile keying exists for.
+        # The registry is profile-strict: a profile that registered nothing
+        # falls back to the gateway config (a LIVE source served by another
+        # profile's adapter carries the transport ref instead — see the
+        # transport-authority test below).
+        home = replace(work, profile="home")
+        assert store.resolve_session_scope(home) == (True, False)
+        # A platform nobody registered still falls back to the gateway config.
+        telegram = replace(work, platform=Platform.TELEGRAM)
+        assert store.resolve_session_scope(telegram) == (True, False)
+
+    def test_transport_adapter_ref_is_the_scope_authority(self, store):
+        """A live inbound source scopes by the adapter that received it —
+        build_source stamps the transport ref — whatever destination profile
+        the source is stamped with (shared-ingress relay case) and whatever
+        the registry holds."""
+        import weakref
+        from types import SimpleNamespace
+
+        class _Transport:
+            config = SimpleNamespace(
+                extra={"group_sessions_per_user": False, "thread_sessions_per_user": False}
+            )
+
+        transport = _Transport()
+        store.config.multiplex_profiles = True
         store.register_platform_session_scope(
             "discord",
             group_sessions_per_user=True,
             thread_sessions_per_user=False,
-            profile="home",
+            profile="work",
         )
-        assert store.resolve_session_scope(home) == (True, False)
-        assert store.resolve_session_scope(work) == (False, False)
-        # Several disagreeing registrations + a profile owning none of them:
-        # stays strict and falls back to the gateway config.
-        guest = replace(work, profile="guest")
-        assert store.resolve_session_scope(guest) == (True, False)
-        # A platform nobody registered still falls back to the gateway config.
-        telegram = replace(work, platform=Platform.TELEGRAM)
-        assert store.resolve_session_scope(telegram) == (True, False)
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            profile="work",
+        )
+        source._transport_adapter_ref = weakref.ref(transport)
+        assert store.resolve_session_scope(source) == (False, False)
+
+    def test_thread_isolation_follows_the_thread_flag_alone(self):
+        """(group=False, thread=True) must isolate threaded participants —
+        build_session_key and is_shared_multi_user_session agree, or routing
+        combines participants while guards and attribution treat them as
+        isolated."""
+        threaded = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            thread_id="t-9",
+        )
+        key = build_session_key(
+            threaded, group_sessions_per_user=False, thread_sessions_per_user=True
+        )
+        assert key == "agent:main:discord:group:guild-123:t-9:alice"
+        assert not is_shared_multi_user_session(
+            threaded, group_sessions_per_user=False, thread_sessions_per_user=True
+        )
 
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""

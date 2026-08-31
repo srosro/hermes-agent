@@ -793,6 +793,19 @@ class TestSameOriginChatGroupScoping:
                              user_id_alt=user_id_alt, thread_id=thread_id)
 
 
+    def test_cross_profile_and_cross_workspace_origins_blocked(self):
+        """Profile namespace and Slack scope_id are part of session identity:
+        a matching chat id in another profile or workspace must not pass the
+        live-origin check (/resume rebind across those boundaries)."""
+        from dataclasses import replace as _replace
+
+        runner = _make_runner()
+        alice = self._src("alice")
+        assert runner._same_origin_chat(alice, _replace(alice, profile="work")) is False
+        slack_a = self._src("alice", platform=Platform.SLACK)
+        slack_b = _replace(slack_a, scope_id="T_OTHER")
+        assert runner._same_origin_chat(slack_a, slack_b) is False
+
     def test_dm_cross_user_blocked_without_chat_id(self):
         # No-chat_id DM: build_session_key falls back to the participant id
         # (user_id_alt or user_id), so two different participants are different
