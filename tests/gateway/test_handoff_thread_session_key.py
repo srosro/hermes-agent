@@ -233,7 +233,7 @@ def test_slack_gateway_level_flag_substitutes_via_the_real_resolver(tmp_path):
     from gateway.session import SessionStore
 
     adapter = _slack_adapter(chat_info={"name": "general", "type": "group"})
-    adapter.config.extra.clear()
+    assert adapter.config.extra == {}  # the transport-ref branch must defer
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(
             sessions_dir=tmp_path, config=GatewayConfig(thread_sessions_per_user=True)
