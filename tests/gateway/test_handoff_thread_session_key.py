@@ -223,6 +223,31 @@ def test_slack_handoff_uses_resolved_thread_scope(tmp_path, extra, gateway_flag)
     assert dest.user_id == "U123456"
 
 
+def test_discord_no_thread_shape_follows_conversation_identity():
+    """Without an effective thread, identity decides: a guild home (workspace
+    scope recorded) keys "group" like organic guild messages; a true DM home
+    keys "dm". Thread-creation failure never demotes a guild conversation."""
+    guild_home = _home(Platform.DISCORD, "111222333", scope_id="999888777")
+    assert _dest(_discord_adapter(), Platform.DISCORD, guild_home, None).chat_type == "group"
+    dm_home = _home(Platform.DISCORD, "444555666")
+    assert _dest(_discord_adapter(), Platform.DISCORD, dm_home, None).chat_type == "dm"
+
+
+def test_relay_fronted_discord_thread_keys_like_native():
+    """A relay-fronted Discord home must key threads on the thread's own id
+    like the native adapter — the relay applies the shared shape helpers for
+    its logical lanes (its class never reaches sibling overrides)."""
+    from gateway.relay.adapter import RelayAdapter
+
+    a = RelayAdapter.__new__(RelayAdapter)
+    a._transport = None
+    dest = _dest(a, Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
+    assert dest.chat_type == "thread"
+    assert dest.chat_id == "T9"
+    native = _dest(_discord_adapter(), Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
+    assert build_session_key(dest) == build_session_key(native)
+
+
 def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
     """A relay connector that cannot answer get_chat_info must still key a
     Slack thread handoff "group" (never "thread") and substitute the
