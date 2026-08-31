@@ -6222,6 +6222,13 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
+        # Canonical transport-ownership stamp: every source entering the
+        # gateway through this adapter scopes by THIS adapter's config —
+        # build_source stamps its own, but relay-delivered logical-platform
+        # events reconstruct SessionSource without the ref and would fall to
+        # unrelated registrations or gateway flags in resolve_session_scope.
+        event.source._transport_adapter_ref = weakref.ref(self)
+
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
 

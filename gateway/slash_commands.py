@@ -1023,81 +1023,20 @@ class GatewaySlashCommandsMixin:
     def _same_origin_chat(self, current: SessionSource, origin: Optional[SessionSource]) -> bool:
         """Platform-agnostic counterpart to ``_same_matrix_room``.
 
-        True when *origin* shares *current*'s platform and chat, and the same
-        participant whenever the session key for this source is per-user. Group
-        and thread sessions that ``build_session_key`` isolates per participant
-        (the default ``group_sessions_per_user=True``) must also be scoped by
-        participant here — otherwise a co-member could resume another member's
-        live per-user group session (IDOR). Only an explicitly shared
-        group/thread (``group_sessions_per_user=False`` /
-        ``thread_sessions_per_user``) lets co-members share, mirroring the key
-        contract via ``is_shared_multi_user_session``.
+        Two origins are the same conversation exactly when they derive the
+        same canonical session key — one comparison in lock-step with
+        ``build_session_key`` across platform, profile namespace, workspace
+        scope, chat, effective thread (``prospective_thread_id`` included),
+        and, whenever the key is per-user, the participant
+        (``user_id_alt or user_id``). Shared group/thread sessions key
+        without the participant, so co-members match; per-user sessions key
+        on it, so a co-member cannot resume another member's live session
+        (IDOR). Field-by-field mirrors of the key contract lived here before
+        and drifted twice — the key IS the contract.
         """
         if origin is None or current is None:
             return False
-        if origin.platform != current.platform:
-            return False
-        if origin.chat_id != current.chat_id:
-            return False
-        # Profile namespace and Slack workspace are part of session identity
-        # (build_session_key keys on both), so a matching chat id in another
-        # profile or workspace is a DIFFERENT session — without these, /resume
-        # could rebind a caller to a transcript across that boundary.
-        if str(getattr(current, "profile", "") or "") != str(
-            getattr(origin, "profile", "") or ""
-        ):
-            return False
-        if str(getattr(current, "scope_id", "") or "") != str(
-            getattr(origin, "scope_id", "") or ""
-        ):
-            return False
-        # thread_id is part of the session key for every chat type when present
-        # (build_session_key appends it unconditionally), so a session in one
-        # thread is a DIFFERENT session from another thread of the same parent
-        # chat. is_shared_multi_user_session only decides participant sharing
-        # WITHIN a thread, never across threads — require thread equality before
-        # any sharing logic so a live origin in thread A cannot match a caller in
-        # thread B of the same parent chat.
-        if str(getattr(current, "thread_id", "") or "") != str(
-            getattr(origin, "thread_id", "") or ""
-        ):
-            return False
-        chat_type = (getattr(current, "chat_type", "") or "").lower()
-        # DM-like chats are always per-user.
-        if chat_type in {"dm", "direct", "private", ""}:
-            # chat_id was already required equal above and, when present, IS the
-            # DM session key — so an equal non-empty chat_id is sufficient.
-            # build_session_key only falls back to the participant id
-            # (``user_id_alt or user_id`` — Signal/Feishu key on user_id_alt)
-            # when there is NO chat_id; mirror that and fail closed on a
-            # missing/different participant so two no-chat_id DM origins are
-            # never conflated (was: compared user_id only and allowed when
-            # either side was missing).
-            if str(getattr(current, "chat_id", "") or ""):
-                return True
-            cur_pid = str(current.user_id_alt or current.user_id or "")
-            org_pid = str(origin.user_id_alt or origin.user_id or "")
-            return bool(cur_pid) and cur_pid == org_pid
-        # Non-DM: scope by participant whenever the session key for this source
-        # is per-user. is_shared_multi_user_session mirrors build_session_key's
-        # isolation rules exactly, so the guard stays in lock-step with the key.
-        _group_per_user, _thread_per_user = self.session_store.resolve_session_scope(current)
-        shared = is_shared_multi_user_session(
-            current,
-            group_sessions_per_user=_group_per_user,
-            thread_sessions_per_user=_thread_per_user,
-        )
-        if shared:
-            return True
-        # Per-user key: compare the participant id the key is actually built
-        # from (user_id_alt or user_id — Signal/Feishu key on user_id_alt).
-        cur_pid = current.user_id_alt or current.user_id
-        org_pid = origin.user_id_alt or origin.user_id
-        if cur_pid and org_pid:
-            return cur_pid == org_pid
-        # Per-user key but a participant id is missing on one side: cannot prove
-        # the same owner — fail closed.
-        return False
+        return self._session_key_for_source(current) == self._session_key_for_source(origin)
 
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin allowed to make a
@@ -1153,8 +1092,14 @@ class GatewaySlashCommandsMixin:
         # thread, and participant. Blank/legacy rows fall through to the
         # field-by-field scoping below.
         row_key = str(row.get("session_key") or "")
-        if row_key and row_key != self._session_key_for_source(source):
-            return False
+        if row_key:
+            # The recorded routing key is the whole identity — equal means
+            # same conversation (a raw-field re-check after a key match
+            # re-rejects canonical aliases like Discord's auto-thread
+            # initiator vs its real-thread follow-up); unequal means a
+            # different one. Only blank/legacy rows fall through to the
+            # field-by-field scoping below.
+            return row_key == self._session_key_for_source(source)
         caller_src = source.platform.value if source.platform else None
         row_src = row.get("source")
         if row_src and caller_src and str(row_src) != str(caller_src):

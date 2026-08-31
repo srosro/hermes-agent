@@ -14280,7 +14280,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         if new_thread_id and not is_telegram_private_chat:
-            dest_chat_type = "thread"
+            # Slack keys organic thread replies as workspace-scoped "group"
+            # sources (chat_id == parent channel, thread in thread_id); a
+            # generic "thread" chat type here binds a transcript no organic
+            # reply's key can ever reach.
+            dest_chat_type = "group" if platform == Platform.SLACK else "thread"
             dest_user_id = "system:handoff"
         else:
             # No thread — assume DM-style for the home channel. For Telegram
@@ -14315,6 +14319,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=dest_user_id,
             user_name="Handoff",
             thread_id=effective_thread_id,
+            # Slack keys include the workspace; a scope-less handoff source
+            # would derive a key organic replies never use.
+            scope_id=getattr(home, "scope_id", None),
             profile=profile_name,
         )
 
@@ -14360,6 +14367,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _group_per_user, _thread_per_user = getattr(
             self.async_session_store, "_store", self.async_session_store
         ).resolve_session_scope(dest_source)
+        if (
+            platform == Platform.SLACK
+            and effective_thread_id
+            and _thread_per_user
+        ):
+            # Per-user thread isolation keys on the participant; a
+            # "system:handoff" placeholder would bind a key no real reply
+            # carries. The home channel records the authenticated user who
+            # ran /sethome — without it the handoff cannot name a reachable
+            # session, so fail loudly rather than bind an orphan.
+            if not getattr(home, "user_id", None):
+                raise RuntimeError(
+                    "Slack thread handoff under thread_sessions_per_user "
+                    "requires the home channel's user_id to key the "
+                    "participant — re-run /sethome from the target thread"
+                )
+            dest_source = dataclasses.replace(dest_source, user_id=str(home.user_id))
         session_key = build_session_key(
             dest_source,
             group_sessions_per_user=_group_per_user,

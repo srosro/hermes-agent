@@ -800,6 +800,9 @@ class TestSameOriginChatGroupScoping:
         from dataclasses import replace as _replace
 
         runner = _make_runner()
+        # Profile namespaces only exist under multiplexing — a single-profile
+        # gateway keys everything in agent:main and source.profile is inert.
+        runner.config.multiplex_profiles = True
         alice = self._src("alice")
         assert runner._same_origin_chat(alice, _replace(alice, profile="work")) is False
         slack_a = self._src("alice", platform=Platform.SLACK)
