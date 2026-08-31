@@ -1062,7 +1062,10 @@ def is_shared_multi_user_session(
     """
     if source.chat_type == "dm":
         return False
-    if source.thread_id:
+    # Same effective-thread test as build_session_key: a channel-initiating
+    # message carrying only prospective_thread_id (Discord auto-thread
+    # continuity) keys as a thread, so it must share like one too.
+    if source.thread_id or source.prospective_thread_id:
         return not thread_sessions_per_user
     return not group_sessions_per_user
 
