@@ -7346,6 +7346,36 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
 
+    async def build_handoff_dest_source(
+        self,
+        *,
+        platform,
+        home,
+        new_thread_id,
+        effective_thread_id,
+        profile_name,
+    ):
+        """Thread destinations key on the thread's OWN id.
+
+        Organic in-thread messages are built with ``chat_id == thread id``
+        (``build_session_key`` yields ``…:thread:{thread}:{thread}``); keying
+        on the parent channel would spawn a fresh session on the next reply.
+        """
+        import dataclasses
+        import weakref
+
+        source = await super().build_handoff_dest_source(
+            platform=platform,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=effective_thread_id,
+            profile_name=profile_name,
+        )
+        if source.chat_type == "thread" and effective_thread_id:
+            source = dataclasses.replace(source, chat_id=str(effective_thread_id))
+            source._transport_adapter_ref = weakref.ref(self)
+        return source
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

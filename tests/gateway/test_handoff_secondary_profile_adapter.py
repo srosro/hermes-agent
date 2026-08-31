@@ -27,10 +27,19 @@ from gateway.session import SessionEntry
 
 def _adapter(tag):
     """A platform adapter stand-in that records which one was used."""
+    import types as _types
+
+    from gateway.platforms.base import BasePlatformAdapter
+
     a = MagicMock()
     a.tag = tag
     a.send = AsyncMock(return_value=SimpleNamespace(success=True))
     a.create_handoff_thread = AsyncMock(return_value=None)
+    # The real base hook, bound to the mock: the handoff path awaits it and
+    # consumes the SessionSource it returns.
+    a.build_handoff_dest_source = _types.MethodType(
+        BasePlatformAdapter.build_handoff_dest_source, a
+    )
     a._bot = None
     return a
 

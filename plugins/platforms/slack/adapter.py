@@ -2498,6 +2498,75 @@ class SlackAdapter(BasePlatformAdapter):
             if lock_acquired and not self._running:
                 self._release_platform_lock()
 
+    async def build_handoff_dest_source(
+        self,
+        *,
+        platform,
+        home,
+        new_thread_id,
+        effective_thread_id,
+        profile_name,
+    ):
+        """Slack never keys ``"thread"`` — organic replies are workspace-scoped
+        ``"dm"``/``"group"`` sources (chat_id = parent channel, thread in
+        thread_id).
+
+        The real conversations API decides IM vs channel; on failure the
+        thread/no-thread intent is preserved (a no-thread DM fallback stays
+        ``"dm"``), logged at warning since this lookup is what keys IM homes
+        correctly. Legacy env-only homes that recorded no workspace recover it
+        from the adapter's scope map. Under per-user thread isolation the
+        home channel's authenticated user keys the participant — a
+        ``system:handoff`` placeholder would bind a key no real reply
+        carries — and its absence fails loudly.
+        """
+        import weakref
+
+        from gateway.session import SessionSource
+
+        home_chat_id = str(home.chat_id)
+        dest_chat_type = "group" if new_thread_id else "dm"
+        info: Dict[str, Any] = {}
+        try:
+            info = await self.get_chat_info(home_chat_id) or {}
+        except Exception:
+            logger.warning(
+                "Handoff: Slack get_chat_info(%s) failed — keeping "
+                "chat_type=%r for the destination key",
+                home_chat_id, dest_chat_type, exc_info=True,
+            )
+        if info.get("type") in ("dm", "group"):
+            dest_chat_type = info["type"]
+
+        scope_id = getattr(home, "scope_id", None) or self.scope_id_for_chat(home_chat_id)
+        user_id = "system:handoff"
+        if (
+            dest_chat_type != "dm"
+            and effective_thread_id
+            and self.config.extra.get("thread_sessions_per_user", False)
+        ):
+            if not getattr(home, "user_id", None):
+                raise RuntimeError(
+                    "Slack thread handoff under thread_sessions_per_user "
+                    "requires the home channel's user_id to key the "
+                    "participant — re-run /sethome from the target thread"
+                )
+            user_id = str(home.user_id)
+
+        source = SessionSource(
+            platform=platform,
+            chat_id=home_chat_id,
+            chat_name=home.name,
+            chat_type=dest_chat_type,
+            user_id=user_id,
+            user_name="Handoff",
+            thread_id=effective_thread_id,
+            scope_id=scope_id,
+            profile=profile_name,
+        )
+        source._transport_adapter_ref = weakref.ref(self)
+        return source
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

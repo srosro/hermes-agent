@@ -3786,6 +3786,50 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    async def build_handoff_dest_source(
+        self,
+        *,
+        platform,
+        home,
+        new_thread_id,
+        effective_thread_id,
+        profile_name,
+    ):
+        """Private-chat DM topics use the DM-topic source shape.
+
+        A handoff-created topic in a positive (private) chat id must key like
+        the user's next real message — ``chat_type="dm"`` with the real user
+        id (== chat id) — or the synthetic turn binds a generic ``thread``
+        key no reply ever derives. Group/forum homes keep the generic shape.
+        """
+        import weakref
+
+        from gateway.delivery import looks_like_telegram_private_chat_id
+        from gateway.session import SessionSource
+
+        home_chat_id = str(home.chat_id)
+        if not looks_like_telegram_private_chat_id(home_chat_id):
+            return await super().build_handoff_dest_source(
+                platform=platform,
+                home=home,
+                new_thread_id=new_thread_id,
+                effective_thread_id=effective_thread_id,
+                profile_name=profile_name,
+            )
+        source = SessionSource(
+            platform=platform,
+            chat_id=home_chat_id,
+            chat_name=home.name,
+            chat_type="dm",
+            user_id=home_chat_id,
+            user_name="Handoff",
+            thread_id=effective_thread_id,
+            scope_id=getattr(home, "scope_id", None),
+            profile=profile_name,
+        )
+        source._transport_adapter_ref = weakref.ref(self)
+        return source
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

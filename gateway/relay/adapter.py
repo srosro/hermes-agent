@@ -3341,6 +3341,47 @@ class RelayAdapter(BasePlatformAdapter):
 
     # ── Phase 4 thread lifecycle ──────────────────────────────────────────
 
+    async def build_handoff_dest_source(
+        self,
+        *,
+        platform,
+        home,
+        new_thread_id,
+        effective_thread_id,
+        profile_name,
+    ):
+        """The connector owns the platform connection, so its ``get_chat_info``
+        answer decides dm/group when it advertises the op — the relay's
+        logical lanes key organic replies as dm/group like the connector
+        binds capabilities, never ``"thread"``. Without the op, keep the
+        generic default: the local ``get_chat_info`` fallback answers
+        ``"dm"`` for everything, which would key a channel home as a DM.
+        """
+        import dataclasses
+        import weakref
+
+        source = await super().build_handoff_dest_source(
+            platform=platform,
+            home=home,
+            new_thread_id=new_thread_id,
+            effective_thread_id=effective_thread_id,
+            profile_name=profile_name,
+        )
+        if self._transport is not None and self.descriptor.supports_op("get_chat_info"):
+            info: Dict[str, Any] = {}
+            try:
+                info = await self._transport.get_chat_info(str(home.chat_id)) or {}
+            except Exception:
+                logger.warning(
+                    "Handoff: relay get_chat_info(%s) failed — keeping "
+                    "chat_type=%r for the destination key",
+                    home.chat_id, source.chat_type, exc_info=True,
+                )
+            if info.get("type") in ("dm", "group"):
+                source = dataclasses.replace(source, chat_type=info["type"])
+                source._transport_adapter_ref = weakref.ref(self)
+        return source
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

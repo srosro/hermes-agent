@@ -4205,6 +4205,51 @@ class BasePlatformAdapter(ABC):
         """
         return None
 
+    async def build_handoff_dest_source(
+        self,
+        *,
+        platform: Platform,
+        home: Any,
+        new_thread_id: Optional[str],
+        effective_thread_id: Optional[str],
+        profile_name: Optional[str],
+    ) -> "SessionSource":
+        """Destination ``SessionSource`` for a CLI handoff into this home.
+
+        The adapter owns its organic key shapes, so each adapter returns the
+        source its own inbound path would derive for the NEXT real reply in
+        that conversation — the gateway consumes the result with no platform
+        branches. ``platform`` is the LOGICAL platform (a relay adapter
+        fronts several, so ``self.platform`` may be RELAY). The returned
+        source carries this adapter's transport ref, keeping scope
+        resolution adapter-owned like any inbound source.
+
+        Default shape: a created thread keys ``"thread"`` on the home
+        channel; otherwise a DM on the home channel. Adapters whose organic
+        replies key differently (Discord threads key on the thread's own id,
+        Slack keys workspace-scoped dm/group, Telegram private-chat topics
+        key as DM topics) override.
+        """
+        from gateway.session import SessionSource
+
+        if new_thread_id:
+            chat_type, user_id = "thread", "system:handoff"
+        else:
+            chat_type, user_id = "dm", "system:handoff"
+        source = SessionSource(
+            platform=platform,
+            chat_id=str(home.chat_id),
+            chat_name=home.name,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name="Handoff",
+            thread_id=effective_thread_id,
+            scope_id=getattr(home, "scope_id", None),
+            profile=profile_name,
+        )
+        source._transport_adapter_ref = weakref.ref(self)
+        return source
+
 
     async def edit_message(
         self,

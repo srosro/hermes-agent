@@ -14153,89 +14153,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not task.done():
                         task.cancel()
 
-    async def _build_handoff_dest_source(
-        self,
-        *,
-        platform: Platform,
-        home: "HomeChannel",
-        new_thread_id: Optional[str],
-        effective_thread_id: Optional[str],
-        profile_name: Optional[str],
-        adapter: Any,
-    ) -> SessionSource:
-        """Destination SessionSource for a CLI handoff.
-
-        Built the way the platform adapter keys ORGANIC replies in that
-        conversation — chat type, chat id, workspace scope — so the handoff
-        binds the exact session the next real reply derives. Extracted from
-        ``_process_handoff`` so tests exercise this construction directly
-        instead of mirroring it.
-
-        Telegram private-chat DM topics use the DM-topic source shape (real
-        user id) so topic-mode checks and binding persistence see the same
-        identity as subsequent inbound messages. Discord thread destinations
-        key on the thread's OWN id — its adapter builds organic in-thread
-        messages with ``chat_id == thread id``. Slack never keys "thread":
-        the live adapter says whether the home is an IM ("dm") or a channel
-        ("group"), and legacy env-only homes that recorded no workspace
-        recover it from the adapter's scope map.
-        """
-        home_chat_id = str(home.chat_id)
-        is_telegram_private_chat = (
-            platform == Platform.TELEGRAM
-            and looks_like_telegram_private_chat_id(home_chat_id)
-        )
-
-        if new_thread_id and not is_telegram_private_chat:
-            dest_chat_type = "thread"
-            dest_user_id = "system:handoff"
-        else:
-            dest_chat_type = "dm"
-            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
-
-        scope_id = getattr(home, "scope_id", None)
-        if platform == Platform.SLACK:
-            info: Dict[str, Any] = {}
-            try:
-                info = await adapter.get_chat_info(home_chat_id) or {}
-            except Exception:
-                # warning, not debug: this lookup IS the mechanism that keys
-                # an IM home as "dm" — a recurring failure silently reverts
-                # to the wrong chat type and must be operator-visible.
-                logger.warning(
-                    "Handoff: Slack get_chat_info(%s) failed — keeping "
-                    "chat_type=%r for the destination key",
-                    home_chat_id, dest_chat_type, exc_info=True,
-                )
-            chat_type = info.get("type")
-            if chat_type in ("dm", "group"):
-                dest_chat_type = chat_type
-            elif dest_chat_type == "thread":
-                # Slack never keys "thread"; without adapter truth, a
-                # thread-created destination keys like an organic channel
-                # reply. The no-thread branch's "dm" is kept as computed.
-                dest_chat_type = "group"
-            if not scope_id:
-                resolver = getattr(adapter, "scope_id_for_chat", None)
-                scope_id = resolver(home_chat_id) if callable(resolver) else None
-
-        if platform == Platform.DISCORD and dest_chat_type == "thread" and effective_thread_id:
-            dest_chat_id = str(effective_thread_id)
-        else:
-            dest_chat_id = home_chat_id
-
-        return SessionSource(
-            platform=platform,
-            chat_id=dest_chat_id,
-            chat_name=home.name,
-            chat_type=dest_chat_type,
-            user_id=dest_user_id,
-            user_name="Handoff",
-            thread_id=effective_thread_id,
-            scope_id=scope_id,
-            profile=profile_name,
-        )
-
     async def _process_handoff(
         self, row: Dict[str, Any], profile_name: Optional[str] = None,
     ) -> None:
@@ -14348,15 +14265,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             str(home.thread_id) if home.thread_id else None
         )
 
-        dest_source = await self._build_handoff_dest_source(
+        # The adapter owns its organic key shapes — it returns the source its
+        # own inbound path would derive for the next reply, transport ref
+        # included, so scope resolution below stays adapter-owned.
+        dest_source = await adapter.build_handoff_dest_source(
             platform=platform,
             home=home,
             new_thread_id=new_thread_id,
             effective_thread_id=effective_thread_id,
             profile_name=profile_name,
-            adapter=adapter,
         )
-        dest_chat_type = dest_source.chat_type
 
         # Compute the gateway's session_key for that destination using the
         # same rules its adapters use, so switch_session targets the right
@@ -14400,24 +14318,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _group_per_user, _thread_per_user = getattr(
             self.async_session_store, "_store", self.async_session_store
         ).resolve_session_scope(dest_source)
-        if (
-            platform == Platform.SLACK
-            and dest_chat_type != "dm"
-            and effective_thread_id
-            and _thread_per_user
-        ):
-            # Per-user thread isolation keys on the participant; a
-            # "system:handoff" placeholder would bind a key no real reply
-            # carries. The home channel records the authenticated user who
-            # ran /sethome — without it the handoff cannot name a reachable
-            # session, so fail loudly rather than bind an orphan.
-            if not getattr(home, "user_id", None):
-                raise RuntimeError(
-                    "Slack thread handoff under thread_sessions_per_user "
-                    "requires the home channel's user_id to key the "
-                    "participant — re-run /sethome from the target thread"
-                )
-            dest_source = dataclasses.replace(dest_source, user_id=str(home.user_id))
         session_key = build_session_key(
             dest_source,
             group_sessions_per_user=_group_per_user,
