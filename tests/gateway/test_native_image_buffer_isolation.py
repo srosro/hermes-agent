@@ -8,6 +8,13 @@ from gateway.session import SessionSource, build_session_key
 
 def _make_runner() -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
+    from types import SimpleNamespace as _SNS
+    runner.session_store = _SNS(
+        resolve_session_scope=lambda source: (
+            getattr(runner.config, "group_sessions_per_user", True),
+            getattr(runner.config, "thread_sessions_per_user", False),
+        )
+    )
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")},
     )

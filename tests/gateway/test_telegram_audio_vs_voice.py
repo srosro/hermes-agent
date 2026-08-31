@@ -25,6 +25,13 @@ def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[n
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
+    from types import SimpleNamespace as _SNS
+    runner.session_store = _SNS(
+        resolve_session_scope=lambda source: (
+            getattr(runner.config, "group_sessions_per_user", True),
+            getattr(runner.config, "thread_sessions_per_user", False),
+        )
+    )
     runner.config = GatewayConfig(stt_enabled=stt_enabled)
     runner.adapters = {}
     runner._model = "test-model"

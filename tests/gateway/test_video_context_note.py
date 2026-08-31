@@ -13,6 +13,13 @@ def _make_runner() -> "GatewayRunner":  # type: ignore[name-defined]
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
+    from types import SimpleNamespace as _SNS
+    runner.session_store = _SNS(
+        resolve_session_scope=lambda source: (
+            getattr(runner.config, "group_sessions_per_user", True),
+            getattr(runner.config, "thread_sessions_per_user", False),
+        )
+    )
     runner.config = GatewayConfig()
     runner.adapters = {}
     runner._has_setup_skill = lambda: False

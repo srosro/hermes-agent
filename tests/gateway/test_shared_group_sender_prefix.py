@@ -8,6 +8,13 @@ from gateway.session import SessionSource
 
 def _make_runner(config: GatewayConfig) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
+    from types import SimpleNamespace as _SNS
+    runner.session_store = _SNS(
+        resolve_session_scope=lambda source: (
+            getattr(runner.config, "group_sessions_per_user", True),
+            getattr(runner.config, "thread_sessions_per_user", False),
+        )
+    )
     runner.config = config
     runner.adapters = {}
     runner._model = "openai/gpt-4.1-mini"
