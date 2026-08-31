@@ -3385,40 +3385,37 @@ class RelayAdapter(BasePlatformAdapter):
             return source
         if platform == Platform.SLACK:
             self.apply_slack_handoff_shape(source, home, new_thread_id)
-        if getattr(home, "chat_type", None):
-            # Recorded canonical identity — no connector lookup needed.
-            if platform == Platform.SLACK:
-                self.apply_handoff_participant(
-                    source, home, self._session_store.resolve_session_scope(source)[1]
-                )
-            return source
-        descriptor = None
-        if self._transport is not None:
-            resolver = getattr(self._transport, "descriptor_for_platform", None)
-            if callable(resolver):
-                # Deliberately stricter than the other per-platform descriptor
-                # reads in this adapter (which fall back to the primary's for
-                # graceful degradation of cosmetic capabilities): here the
-                # answer decides SESSION IDENTITY, so a resolver that knows
-                # the lanes and holds none for this platform means no
-                # negotiated capabilities — never borrow the primary's.
-                descriptor = resolver(platform.value)
-            else:
-                descriptor = self.descriptor
-        if descriptor is not None and descriptor.supports_op("get_chat_info"):
-            info: Dict[str, Any] = {}
-            try:
-                info = await self._transport.get_chat_info(
-                    str(home.chat_id), platform=platform.value
-                ) or {}
-            except Exception:
-                logger.warning(
-                    "Handoff: relay get_chat_info(%s) failed — keeping "
-                    "chat_type=%r for the destination key",
-                    home.chat_id, source.chat_type, exc_info=True,
-                )
-            if info.get("type") in ("dm", "group"):
-                source.chat_type = info["type"]
+        # Recorded canonical identity skips the connector lookup entirely —
+        # same in ("dm", "group") filter every other consumer applies.
+        if getattr(home, "chat_type", None) not in ("dm", "group"):
+            descriptor = None
+            if self._transport is not None:
+                resolver = getattr(self._transport, "descriptor_for_platform", None)
+                if callable(resolver):
+                    # Deliberately stricter than the other per-platform
+                    # descriptor reads in this adapter (which fall back to the
+                    # primary's for graceful degradation of cosmetic
+                    # capabilities): here the answer decides SESSION IDENTITY,
+                    # so a resolver that knows the lanes and holds none for
+                    # this platform means no negotiated capabilities — never
+                    # borrow the primary's.
+                    descriptor = resolver(platform.value)
+                else:
+                    descriptor = self.descriptor
+            if descriptor is not None and descriptor.supports_op("get_chat_info"):
+                info: Dict[str, Any] = {}
+                try:
+                    info = await self._transport.get_chat_info(
+                        str(home.chat_id), platform=platform.value
+                    ) or {}
+                except Exception:
+                    logger.warning(
+                        "Handoff: relay get_chat_info(%s) failed — keeping "
+                        "chat_type=%r for the destination key",
+                        home.chat_id, source.chat_type, exc_info=True,
+                    )
+                if info.get("type") in ("dm", "group"):
+                    source.chat_type = info["type"]
         if platform == Platform.SLACK:
             self.apply_handoff_participant(
                 source, home, self._session_store.resolve_session_scope(source)[1]

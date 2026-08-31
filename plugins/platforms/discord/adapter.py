@@ -7378,6 +7378,11 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 info = await self.get_chat_info(str(home.chat_id)) or {}
             except Exception:
+                logger.warning(
+                    "Handoff: Discord get_chat_info(%s) failed — keeping "
+                    "chat_type=%r for the destination key",
+                    home.chat_id, source.chat_type, exc_info=True,
+                )
                 info = {}
             if info.get("type") in ("group", "channel", "thread"):
                 source.chat_type = "group"

@@ -5878,3 +5878,22 @@ class TestSlackAuthoredTextDeduplication:
         assert "Deploy failed" in payload
         assert "rollback" in payload
         assert "Roll back" in payload
+
+
+class TestGetChatInfoMpim:
+    @pytest.mark.asyncio
+    async def test_mpim_answers_dm(self):
+        """MPIMs bind organic replies as DMs (channel_type "mpim" → "dm"), so
+        chat info must agree or handoff and organic keys fork."""
+        from types import SimpleNamespace
+
+        config = PlatformConfig(enabled=True, token="***")
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._get_client = lambda chat_id: SimpleNamespace(
+            conversations_info=AsyncMock(
+                return_value={"channel": {"name": "mp-group", "is_mpim": True}}
+            )
+        )
+        info = await a.get_chat_info("G0MPIMPIM")
+        assert info["type"] == "dm"

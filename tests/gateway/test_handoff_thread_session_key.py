@@ -47,10 +47,18 @@ def _dest(adapter, platform, home, thread_id):
     )
 
 
-def _discord_adapter():
+def _discord_adapter(*, chat_info=None, raise_lookup=False):
     from plugins.platforms.discord.adapter import DiscordAdapter
 
-    return DiscordAdapter.__new__(DiscordAdapter)
+    a = DiscordAdapter.__new__(DiscordAdapter)
+
+    async def get_chat_info(chat_id):
+        if raise_lookup or chat_info is None:
+            raise RuntimeError("discord api down")
+        return chat_info
+
+    a.get_chat_info = get_chat_info
+    return a
 
 
 def _slack_adapter(*, chat_info=None, scope=None, extra=None, raise_lookup=False):
@@ -232,6 +240,22 @@ def test_discord_no_thread_shape_follows_conversation_identity():
     assert _dest(_discord_adapter(), Platform.DISCORD, guild_home, None).chat_type == "group"
     dm_home = _home(Platform.DISCORD, "444555666")
     assert _dest(_discord_adapter(), Platform.DISCORD, dm_home, None).chat_type == "dm"
+
+
+def test_discord_legacy_home_promotes_via_live_lookup():
+    """A scope-less, non-recorded (legacy env-configured) Discord home
+    resolves once through the live channel: a non-DM answer keys "group";
+    a failed lookup keeps the "dm" default."""
+    home = _home(Platform.DISCORD, "111222333")
+    promoted = _dest(
+        _discord_adapter(chat_info={"name": "general", "type": "channel"}),
+        Platform.DISCORD,
+        home,
+        None,
+    )
+    assert promoted.chat_type == "group"
+    kept = _dest(_discord_adapter(raise_lookup=True), Platform.DISCORD, home, None)
+    assert kept.chat_type == "dm"
 
 
 def test_relay_fronted_discord_thread_keys_like_native():
