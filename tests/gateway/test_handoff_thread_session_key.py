@@ -174,6 +174,28 @@ def test_slack_per_user_threads_substitute_the_home_user():
         _dest(adapter, Platform.SLACK, _home(Platform.SLACK, channel_id), thread_ts)
 
 
+def test_slack_per_user_threads_honor_the_gateway_level_flag():
+    """A deployment setting thread_sessions_per_user only at gateway level
+    (platform extra carries no key) must still substitute the participant —
+    the gate resolves extra-then-gateway-config like _create_adapter's
+    seeding."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig
+
+    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"})
+    adapter._session_store = SimpleNamespace(
+        config=GatewayConfig(thread_sessions_per_user=True)
+    )
+    dest = _dest(
+        adapter,
+        Platform.SLACK,
+        _home(Platform.SLACK, "C12345678", user_id="U123456"),
+        "1690000000.123456",
+    )
+    assert dest.user_id == "U123456"
+
+
 def test_telegram_private_chat_topic_keys_as_dm_topic():
     """A handoff-created topic in a private chat must use the DM-topic source
     shape (real user id == chat id) so the user's next message shares it."""
