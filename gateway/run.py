@@ -14356,10 +14356,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # at construction is invisible to a re-loaded config object, and a key
         # built from the wrong scope points switch_session at a session
         # nothing routes to.
+        # Same duck-typed/Mock-store pitfall as the profile resolver above: a
+        # MagicMock resolver returns an ununpackable MagicMock, so validate the
+        # shape before trusting it.
         _scope_store = getattr(self.async_session_store, "_store", self.async_session_store)
         _scope_resolver = getattr(_scope_store, "resolve_session_scope", None)
-        if callable(_scope_resolver):
-            _group_per_user, _thread_per_user = _scope_resolver(dest_source)
+        _scope = _scope_resolver(dest_source) if callable(_scope_resolver) else None
+        if isinstance(_scope, tuple) and len(_scope) == 2:
+            _group_per_user, _thread_per_user = _scope
         else:
             _group_per_user = extra.get("group_sessions_per_user", True)
             _thread_per_user = extra.get("thread_sessions_per_user", False)
