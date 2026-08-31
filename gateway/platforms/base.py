@@ -4210,11 +4210,19 @@ class BasePlatformAdapter(ABC):
         """Discord threads key on the thread's OWN id (organic in-thread
         messages carry ``chat_id == thread id``). Shared by the native
         Discord override and the relay's Discord lane — module-level so the
-        relay never has to import plugin adapters."""
+        relay never has to import plugin adapters.
+
+        Without an effective thread, conversation IDENTITY decides — a guild
+        home (workspace scope recorded) keys ``"group"`` like organic guild
+        channel messages; only a true DM home keys ``"dm"``. Thread-creation
+        success is delivery detail, never identity.
+        """
         if effective_thread_id:
             source.chat_type = "thread"
             source.chat_id = str(effective_thread_id)
             source.user_id = "system:handoff"
+        elif source.scope_id:
+            source.chat_type = "group"
 
     @staticmethod
     def apply_telegram_handoff_shape(source: "SessionSource", home: Any, effective_thread_id: Optional[str]) -> None:
@@ -4233,11 +4241,23 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def apply_slack_handoff_shape(source: "SessionSource", new_thread_id: Optional[str]) -> None:
         """Slack never keys ``"thread"``: organic replies are ``"dm"``/
-        ``"group"`` sources with the thread in ``thread_id``. This sets the
-        thread/no-thread default; the conversations API (native) or the
-        connector's chat info (relay) refines dm-vs-group on top when
-        available — the refinement is never the sole source of truth."""
-        source.chat_type = "group" if new_thread_id else "dm"
+        ``"group"`` sources with the thread in ``thread_id``.
+
+        Conversation IDENTITY decides the default — Slack encodes it in the
+        id prefix (``D…`` = IM, ``C…``/``G…`` = channel/private group), which
+        survives chat-info being unavailable; thread-creation success is
+        never identity. The conversations API (native) or the connector's
+        chat info (relay) refines on top when available. An unrecognized
+        prefix falls back to the thread heuristic — the least-wrong guess
+        for a shape Slack has never minted.
+        """
+        chat_id = str(source.chat_id)
+        if chat_id.startswith("D"):
+            source.chat_type = "dm"
+        elif chat_id.startswith(("C", "G")):
+            source.chat_type = "group"
+        else:
+            source.chat_type = "group" if new_thread_id else "dm"
 
     @staticmethod
     def apply_handoff_participant(source: "SessionSource", home: Any, thread_per_user: bool) -> None:

@@ -3388,9 +3388,18 @@ class RelayAdapter(BasePlatformAdapter):
         descriptor = None
         if self._transport is not None:
             resolver = getattr(self._transport, "descriptor_for_platform", None)
-            descriptor = (
-                resolver(platform.value) if callable(resolver) else None
-            ) or self.descriptor
+            if callable(resolver):
+                # Fail-closed for an explicit lane (same policy as the
+                # per-platform capability reads elsewhere in this adapter): a
+                # resolver that knows the lanes and holds none for this
+                # platform means no negotiated capabilities — never borrow
+                # the primary identity's descriptor.
+                try:
+                    descriptor = resolver(platform.value)
+                except Exception:  # noqa: BLE001 - capability lookup must never break a handoff
+                    descriptor = None
+            else:
+                descriptor = self.descriptor
         if descriptor is not None and descriptor.supports_op("get_chat_info"):
             info: Dict[str, Any] = {}
             try:

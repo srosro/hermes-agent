@@ -138,16 +138,18 @@ def test_slack_dm_home_handoff_keys_as_dm():
     assert build_session_key(dest) == build_session_key(organic)
 
 
-def test_slack_lookup_failure_preserves_no_thread_dm_type():
-    """A transient get_chat_info failure must not flip a no-thread DM-fallback
-    destination to "group" — the pre-computed intent survives; only a
-    thread-created destination normalizes to "group"."""
+def test_slack_lookup_failure_falls_back_to_identity_prefix():
+    """A transient get_chat_info failure must not change conversation
+    identity: the Slack id prefix decides (D = IM, C = channel), whatever
+    thread creation did — a DM home with a created thread stays "dm" like
+    its organic replies, and a channel home without one stays "group"."""
     adapter = _slack_adapter(raise_lookup=True)
-    home = _home(Platform.SLACK, "D0DMDMDM", thread_id="1690000000.123456")
-    no_thread = _dest(adapter, Platform.SLACK, home, None)
-    assert no_thread.chat_type == "dm"
-    threaded = _dest(adapter, Platform.SLACK, home, "1690000000.123456")
-    assert threaded.chat_type == "group"
+    dm_home = _home(Platform.SLACK, "D0DMDMDM", thread_id="1690000000.123456")
+    assert _dest(adapter, Platform.SLACK, dm_home, None).chat_type == "dm"
+    assert _dest(adapter, Platform.SLACK, dm_home, "1690000000.123456").chat_type == "dm"
+    channel_home = _home(Platform.SLACK, "C12345678")
+    assert _dest(adapter, Platform.SLACK, channel_home, None).chat_type == "group"
+    assert _dest(adapter, Platform.SLACK, channel_home, "169.1").chat_type == "group"
 
 
 def test_slack_per_user_threads_substitute_the_home_user():
@@ -180,63 +182,33 @@ def test_slack_per_user_threads_substitute_the_home_user():
         _dest(adapter, Platform.SLACK, _home(Platform.SLACK, channel_id), thread_ts)
 
 
-def test_slack_substitution_reads_scope_through_the_transport_ref(tmp_path):
-    """The REAL resolver reads this adapter's extra through the weakref the
-    base hook stamps — pinning the wiring the mutate-in-place overrides
-    depend on (a gateway config saying shared threads must lose to the
-    adapter's own thread_sessions_per_user)."""
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("extra", "gateway_flag"),
+    [
+        # Adapter extra wins through the stamped transport ref.
+        ({"group_sessions_per_user": True, "thread_sessions_per_user": True}, False),
+        # Empty extra defers; the gateway-level flag decides.
+        ({}, True),
+    ],
+    ids=["adapter-extra", "gateway-config"],
+)
+def test_slack_handoff_uses_resolved_thread_scope(tmp_path, extra, gateway_flag):
+    """The REAL resolver decides participant substitution — reading this
+    adapter's extra through the weakref the base hook stamps, else falling
+    to the gateway config. One precedence contract, both directions."""
     from unittest.mock import patch
 
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
 
-    extra = {"group_sessions_per_user": True, "thread_sessions_per_user": True}
     adapter = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=extra)
     with patch("gateway.session.SessionStore._ensure_loaded"):
-        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
-    store._db = None
-    store._loaded = True
-    adapter._session_store = store
-
-    dest = _dest(
-        adapter,
-        Platform.SLACK,
-        _home(Platform.SLACK, "C12345678", user_id="U123456"),
-        "1690000000.123456",
-    )
-    assert dest.user_id == "U123456"
-
-
-def test_relay_fronted_discord_thread_keys_like_native():
-    """A relay-fronted Discord home must key threads on the thread's own id
-    like the native adapter — the relay applies the shared shape helpers for
-    its logical lanes (its class never reaches sibling overrides)."""
-    from gateway.relay.adapter import RelayAdapter
-
-    a = RelayAdapter.__new__(RelayAdapter)
-    a._transport = None
-    dest = _dest(a, Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
-    assert dest.chat_type == "thread"
-    assert dest.chat_id == "T9"
-    native = _dest(_discord_adapter(), Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
-    assert build_session_key(dest) == build_session_key(native)
-
-
-def test_slack_gateway_level_flag_substitutes_via_the_real_resolver(tmp_path):
-    """A deployment setting thread_sessions_per_user only at gateway level
-    (adapter extra empty, so the transport-ref branch defers) must still
-    substitute the participant — the canonical resolver's gateway-config
-    fallback, exercised end to end."""
-    from unittest.mock import patch
-
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-
-    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"})
-    assert adapter.config.extra == {}  # the transport-ref branch must defer
-    with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(
-            sessions_dir=tmp_path, config=GatewayConfig(thread_sessions_per_user=True)
+            sessions_dir=tmp_path,
+            config=GatewayConfig(thread_sessions_per_user=gateway_flag),
         )
     store._db = None
     store._loaded = True

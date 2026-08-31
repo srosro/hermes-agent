@@ -86,8 +86,14 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Proxy a chat-info lookup to the connector."""
+    async def get_chat_info(
+        self, chat_id: str, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Proxy a chat-info lookup to the connector.
+
+        ``platform`` selects the logical lane on a multi-platform relay;
+        ``None`` keeps the session's default platform.
+        """
         ...
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
