@@ -14351,10 +14351,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         handoff_profile = resolved
             except Exception:
                 logger.debug("Handoff: could not resolve profile namespace", exc_info=True)
+        # Resolve scope through the store, not this freshly loaded config's
+        # ``extra``: an adapter that overrides scope in its own resolved extra
+        # at construction is invisible to a re-loaded config object, and a key
+        # built from the wrong scope points switch_session at a session
+        # nothing routes to.
+        _scope_store = getattr(self.async_session_store, "_store", self.async_session_store)
+        _scope_resolver = getattr(_scope_store, "resolve_session_scope", None)
+        if callable(_scope_resolver):
+            _group_per_user, _thread_per_user = _scope_resolver(dest_source)
+        else:
+            _group_per_user = extra.get("group_sessions_per_user", True)
+            _thread_per_user = extra.get("thread_sessions_per_user", False)
         session_key = build_session_key(
             dest_source,
-            group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            group_sessions_per_user=_group_per_user,
+            thread_sessions_per_user=_thread_per_user,
             profile=handoff_profile,
         )
 
