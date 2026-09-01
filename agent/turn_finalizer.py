@@ -618,11 +618,17 @@ def finalize_turn(
                                     "status_callback error for turn_stop explainer",
                                     exc_info=True,
                                 )
+                                # Status delivery failed: fall back to the
+                                # inline substitution so an abnormal end is
+                                # never silent (#34452), even here — the
+                                # explanation replaces an empty terminal and
+                                # rides behind a partial fragment.
                                 if _is_empty_terminal:
-                                    # Status delivery failed: fall back to the
-                                    # inline explanation so an abnormal end is
-                                    # never silent (#34452), even here.
                                     final_response = _explanation
+                                else:
+                                    final_response = (
+                                        _stripped + "\n\n" + _explanation
+                                    )
                             else:
                                 if _is_empty_terminal:
                                     # Clear the "(empty)" sentinel so the

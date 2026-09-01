@@ -609,3 +609,33 @@ def test_gateway_status_callback_failure_falls_back_to_inline_explanation():
 
     assert result["turn_exit_reason"] == "empty_response_exhausted"
     assert "No reply:" in result["final_response"]
+
+
+def test_gateway_status_callback_failure_appends_reason_to_partial_fragment():
+    """Callback failure on a partial-stream-recovery turn: the fragment stays
+    and the explanation is appended inline — never silently lost."""
+    agent = _make_agent(max_iterations=10)
+    def _boom(event_type, message):
+        raise RuntimeError("adapter down")
+    agent.status_callback = _boom
+    empty_stub = _mock_response(content=None, finish_reason="stop")
+    recovered = (
+        "I inspected the running gateway and found that the current turn "
+        "stopped after the provider stream timed out."
+    )
+
+    def _fake_api_call(_api_kwargs):
+        agent._current_streamed_assistant_text = recovered
+        return empty_stub
+
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "partial_stream_recovery"
+    assert result["final_response"].startswith(recovered)
+    assert "No reply:" in result["final_response"]
