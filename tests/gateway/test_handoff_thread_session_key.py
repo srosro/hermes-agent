@@ -2,22 +2,17 @@
 replies, or the next real message in the handed-off conversation derives a
 different session key and spawns a fresh session.
 
-The construction is adapter-owned (``build_handoff_dest_source``): each
-adapter returns the source its own inbound path would derive, and the gateway
-consumes the result with no platform branches. These tests drive the real
-hooks with stubbed IO — no mirrors of production logic.
-
-Key shapes pinned here:
-  - Discord threads key on the thread's OWN id (organic in-thread messages
-    are built with ``chat_id == thread id``).
-  - Slack never keys ``"thread"``: organic replies are workspace-scoped
-    ``"dm"``/``"group"`` sources; the conversations API decides IM vs
-    channel, legacy homes recover their workspace from the adapter, and a
-    lookup failure preserves the thread/no-thread intent.
-  - Telegram private-chat topics key as DM topics with the real user id.
+Construction is one authoritative builder (``build_handoff_dest_source``)
+with thin per-adapter shape hooks; these tests drive the real hooks with
+stubbed IO — no mirrors of production logic. The parity contract is ONE
+matrix: ``build_session_key(destination) == build_session_key(organic)``
+across native and relay-fronted platforms; the focused tests below it pin
+the failure policies and legacy fallbacks.
 """
 
 import asyncio
+
+import pytest
 
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
@@ -86,79 +81,199 @@ def _slack_adapter(*, chat_info=None, scope=None, extra=None, raise_lookup=False
     return _wire_store(a, tspu=bool((extra or {}).get("thread_sessions_per_user", False)))
 
 
-def test_discord_handoff_key_matches_organic_in_thread_key():
-    parent_id = "1523581766923845724"
-    thread_id = "1523590238595846166"
+def _telegram_adapter():
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
-    organic = build_session_key(
-        SessionSource(
-            platform=Platform.DISCORD,
-            chat_id=thread_id,
+    return _wire_store(TelegramAdapter.__new__(TelegramAdapter))
+
+
+def _signal_adapter():
+    from gateway.platforms.signal import SignalAdapter
+
+    return _wire_store(SignalAdapter.__new__(SignalAdapter))
+
+
+def _relay_adapter(*, tspu=False):
+    from gateway.relay.adapter import RelayAdapter
+
+    a = RelayAdapter.__new__(RelayAdapter)
+    a._transport = None
+    return _wire_store(a, tspu=tspu)
+
+
+# ── The parity contract: one matrix ─────────────────────────────────────────
+#
+# Each row: an adapter, a home, the thread outcome, the organic source the
+# next real reply would produce, and the key flags — the destination and the
+# organic source must derive byte-identical session keys.
+
+_DISCORD_THREAD = "1523590238595846166"
+_DISCORD_PARENT = "1523581766923845724"
+_SLACK_TS = "1690000000.123456"
+
+PARITY_CASES = [
+    pytest.param(
+        _discord_adapter,
+        Platform.DISCORD,
+        dict(chat_id=_DISCORD_PARENT),
+        _DISCORD_THREAD,
+        dict(
+            chat_id=_DISCORD_THREAD,
             chat_type="thread",
             user_id="171164909650968576",
-            thread_id=thread_id,
-            parent_chat_id=parent_id,
+            thread_id=_DISCORD_THREAD,
+            parent_chat_id=_DISCORD_PARENT,
         ),
-        thread_sessions_per_user=False,
-    )
-    dest = _dest(_discord_adapter(), Platform.DISCORD, _home(Platform.DISCORD, parent_id), thread_id)
-    handoff = build_session_key(dest, thread_sessions_per_user=False)
+        dict(thread_sessions_per_user=False),
+        id="discord-thread-native",
+    ),
+    pytest.param(
+        _relay_adapter,
+        Platform.DISCORD,
+        dict(chat_id=_DISCORD_PARENT),
+        _DISCORD_THREAD,
+        dict(
+            chat_id=_DISCORD_THREAD,
+            chat_type="thread",
+            user_id="171164909650968576",
+            thread_id=_DISCORD_THREAD,
+            parent_chat_id=_DISCORD_PARENT,
+        ),
+        dict(thread_sessions_per_user=False),
+        id="discord-thread-relay",
+    ),
+    pytest.param(
+        lambda: _slack_adapter(chat_info={"name": "general", "type": "group"}, scope="T_TEAM"),
+        Platform.SLACK,
+        dict(chat_id="C12345678"),
+        _SLACK_TS,
+        dict(
+            chat_id="C12345678",
+            chat_type="group",
+            user_id="U123456",
+            thread_id=_SLACK_TS,
+            scope_id="T_TEAM",
+        ),
+        dict(thread_sessions_per_user=False),
+        id="slack-channel-thread-native",
+    ),
+    pytest.param(
+        lambda: _slack_adapter(chat_info={"name": "dm", "type": "dm"}, scope="T_TEAM"),
+        Platform.SLACK,
+        dict(chat_id="D0DMDMDM"),
+        _SLACK_TS,
+        dict(
+            chat_id="D0DMDMDM",
+            chat_type="dm",
+            user_id="U123",
+            thread_id=_SLACK_TS,
+            scope_id="T_TEAM",
+        ),
+        dict(),
+        id="slack-dm-home-native",
+    ),
+    pytest.param(
+        lambda: _relay_adapter(tspu=True),
+        Platform.SLACK,
+        dict(chat_id="C12345678", user_id="U123456"),
+        _SLACK_TS,
+        dict(
+            chat_id="C12345678",
+            chat_type="group",
+            user_id="U123456",
+            thread_id=_SLACK_TS,
+        ),
+        dict(thread_sessions_per_user=True),
+        id="slack-per-user-thread-relay-no-chat-info",
+    ),
+    pytest.param(
+        _telegram_adapter,
+        Platform.TELEGRAM,
+        dict(chat_id="123456789"),
+        "77",
+        dict(chat_id="123456789", chat_type="dm", user_id="123456789", thread_id="77"),
+        dict(),
+        id="telegram-private-topic-native",
+    ),
+    pytest.param(
+        _relay_adapter,
+        Platform.TELEGRAM,
+        dict(chat_id="123456789"),
+        "77",
+        dict(chat_id="123456789", chat_type="dm", user_id="123456789", thread_id="77"),
+        dict(),
+        id="telegram-private-topic-relay",
+    ),
+    pytest.param(
+        _telegram_adapter,
+        Platform.TELEGRAM,
+        dict(chat_id="-1001234567890", user_id="208214988"),
+        "77",
+        dict(
+            chat_id="-1001234567890",
+            chat_type="group",
+            user_id="208214988",
+            thread_id="77",
+        ),
+        dict(thread_sessions_per_user=False),
+        id="telegram-supergroup-topic-native",
+    ),
+    pytest.param(
+        _relay_adapter,
+        Platform.TELEGRAM,
+        dict(chat_id="-1001234567890", user_id="208214988"),
+        "77",
+        dict(
+            chat_id="-1001234567890",
+            chat_type="group",
+            user_id="208214988",
+            thread_id="77",
+        ),
+        dict(thread_sessions_per_user=False),
+        id="telegram-supergroup-topic-relay",
+    ),
+    pytest.param(
+        _signal_adapter,
+        Platform.SIGNAL,
+        dict(chat_id="grp.abc", user_id="+1555", chat_type="group"),
+        None,
+        dict(chat_id="grp.abc", chat_type="group", user_id="+1555"),
+        dict(),
+        id="signal-generic-group-no-override",
+    ),
+]
 
-    assert handoff == organic
-    assert handoff == f"agent:main:discord:thread:{thread_id}:{thread_id}"
-    # The transport ref rides the source, keeping scope resolution
+
+@pytest.mark.parametrize(
+    ("adapter_factory", "platform", "home_kwargs", "thread_id", "organic_kwargs", "key_kwargs"),
+    PARITY_CASES,
+)
+def test_handoff_key_matches_organic_reply_key(
+    adapter_factory, platform, home_kwargs, thread_id, organic_kwargs, key_kwargs
+):
+    adapter = adapter_factory()
+    home = _home(platform, **home_kwargs)
+    dest = _dest(adapter, platform, home, thread_id)
+    organic = SessionSource(platform=platform, **organic_kwargs)
+    assert build_session_key(dest, **key_kwargs) == build_session_key(
+        organic, **key_kwargs
+    )
+    # The transport ref rides every destination, keeping scope resolution
     # adapter-owned like any inbound source.
     assert getattr(dest, "_transport_adapter_ref", None) is not None
 
 
-def test_slack_channel_handoff_key_matches_organic_thread_reply_key():
-    channel_id = "C12345678"
-    thread_ts = "1690000000.123456"
-
-    organic = build_session_key(
-        SessionSource(
-            platform=Platform.SLACK,
-            chat_id=channel_id,
-            chat_type="group",
-            user_id="U123456",
-            thread_id=thread_ts,
-            scope_id="T_TEAM",
-        ),
-        thread_sessions_per_user=False,
-    )
-    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"}, scope="T_TEAM")
-    dest = _dest(adapter, Platform.SLACK, _home(Platform.SLACK, channel_id), thread_ts)
-    assert build_session_key(dest, thread_sessions_per_user=False) == organic
-    # Legacy env-only home recorded no workspace: recovered from the adapter.
-    assert dest.scope_id == "T_TEAM"
-
-
-def test_slack_dm_home_handoff_keys_as_dm():
-    """An IM home must key "dm" like organic IM replies — the adapter's
-    reported chat type decides, never a hardcoded "group"."""
-    adapter = _slack_adapter(chat_info={"name": "dm", "type": "dm"}, scope="T_TEAM")
-    dest = _dest(adapter, Platform.SLACK, _home(Platform.SLACK, "D0DMDMDM"), "1690000000.123456")
-    assert dest.chat_type == "dm"
-    organic = SessionSource(
-        platform=Platform.SLACK,
-        chat_id="D0DMDMDM",
-        chat_type="dm",
-        user_id="U123",
-        thread_id="1690000000.123456",
-        scope_id="T_TEAM",
-    )
-    assert build_session_key(dest) == build_session_key(organic)
+# ── Failure policies and legacy fallbacks ───────────────────────────────────
 
 
 def test_slack_lookup_failure_falls_back_to_identity_prefix():
     """A transient get_chat_info failure must not change conversation
     identity: the Slack id prefix decides (D = IM, C = channel), whatever
-    thread creation did — a DM home with a created thread stays "dm" like
-    its organic replies, and a channel home without one stays "group"."""
+    thread creation did."""
     adapter = _slack_adapter(raise_lookup=True)
-    dm_home = _home(Platform.SLACK, "D0DMDMDM", thread_id="1690000000.123456")
+    dm_home = _home(Platform.SLACK, "D0DMDMDM", thread_id=_SLACK_TS)
     assert _dest(adapter, Platform.SLACK, dm_home, None).chat_type == "dm"
-    assert _dest(adapter, Platform.SLACK, dm_home, "1690000000.123456").chat_type == "dm"
+    assert _dest(adapter, Platform.SLACK, dm_home, _SLACK_TS).chat_type == "dm"
     # Non-thread groups key per participant under the default scope, so the
     # home's recorded user rides along (generalized participant application).
     channel_home = _home(Platform.SLACK, "C12345678", user_id="U1")
@@ -168,37 +283,41 @@ def test_slack_lookup_failure_falls_back_to_identity_prefix():
     assert _dest(adapter, Platform.SLACK, channel_home, "169.1").chat_type == "group"
 
 
-def test_slack_per_user_threads_substitute_the_home_user():
-    """Under thread_sessions_per_user the participant keys the session; the
-    home channel's authenticated user replaces the placeholder, and its
-    absence fails loudly rather than binding an unreachable transcript."""
-    import pytest
+def test_participant_policy_triangle():
+    """Substitute when the home recorded a user; land-with-warning on a
+    legacy non-thread home without one (run.py's thread-creation-failure
+    contract); raise only for threaded per-user handoffs."""
+    slack = _slack_adapter(chat_info={"name": "general", "type": "group"})
+    landed = _dest(slack, Platform.SLACK, _home(Platform.SLACK, "C12345678"), None)
+    assert landed.user_id == "system:handoff"
 
-    extra = {"group_sessions_per_user": True, "thread_sessions_per_user": True}
-    adapter = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=extra)
-    channel_id, thread_ts, user_id = "C12345678", "1690000000.123456", "U123456"
-
-    dest = _dest(
-        adapter, Platform.SLACK, _home(Platform.SLACK, channel_id, user_id=user_id), thread_ts
+    tspu_extra = {"group_sessions_per_user": True, "thread_sessions_per_user": True}
+    strict = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=tspu_extra)
+    substituted = _dest(
+        strict, Platform.SLACK, _home(Platform.SLACK, "C12345678", user_id="U123456"), _SLACK_TS
     )
-    organic = build_session_key(
-        SessionSource(
-            platform=Platform.SLACK,
-            chat_id=channel_id,
-            chat_type="group",
-            user_id=user_id,
-            thread_id=thread_ts,
-        ),
-        thread_sessions_per_user=True,
-    )
-    assert build_session_key(dest, thread_sessions_per_user=True) == organic
-    assert organic.endswith(f":{user_id}")
-
+    assert substituted.user_id == "U123456"
     with pytest.raises(RuntimeError, match="re-run /sethome"):
-        _dest(adapter, Platform.SLACK, _home(Platform.SLACK, channel_id), thread_ts)
+        _dest(strict, Platform.SLACK, _home(Platform.SLACK, "C12345678"), _SLACK_TS)
 
 
-import pytest
+def test_participant_substitution_restores_user_id_alt():
+    """build_session_key PREFERS user_id_alt (Signal UUID, Feishu union_id…),
+    so the substitution must restore both recorded participant fields."""
+    adapter = _signal_adapter()
+    home = _home(Platform.SIGNAL, "grp.abc", user_id="+1555", chat_type="group")
+    home.user_id_alt = "uuid-1234"
+    dest = _dest(adapter, Platform.SIGNAL, home, None)
+    assert dest.user_id == "+1555"
+    assert dest.user_id_alt == "uuid-1234"
+    organic = SessionSource(
+        platform=Platform.SIGNAL,
+        chat_id="grp.abc",
+        chat_type="group",
+        user_id="+1555",
+        user_id_alt="uuid-1234",
+    )
+    assert build_session_key(dest) == build_session_key(organic)
 
 
 @pytest.mark.parametrize(
@@ -221,6 +340,8 @@ def test_slack_handoff_uses_resolved_thread_scope(tmp_path, extra, gateway_flag)
     from gateway.session import SessionStore
 
     adapter = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=extra)
+    if not extra:
+        assert adapter.config.extra == {}  # the transport-ref branch must defer
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(
             sessions_dir=tmp_path,
@@ -234,7 +355,7 @@ def test_slack_handoff_uses_resolved_thread_scope(tmp_path, extra, gateway_flag)
         adapter,
         Platform.SLACK,
         _home(Platform.SLACK, "C12345678", user_id="U123456"),
-        "1690000000.123456",
+        _SLACK_TS,
     )
     assert dest.user_id == "U123456"
 
@@ -265,122 +386,6 @@ def test_discord_legacy_home_promotes_via_live_lookup():
     assert kept.chat_type == "dm"
 
 
-def test_relay_fronted_discord_thread_keys_like_native():
-    """A relay-fronted Discord home must key threads on the thread's own id
-    like the native adapter — the relay applies the shared shape helpers for
-    its logical lanes (its class never reaches sibling overrides)."""
-    from gateway.relay.adapter import RelayAdapter
-
-    a = _wire_store(RelayAdapter.__new__(RelayAdapter))
-    a._transport = None
-    dest = _dest(a, Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
-    assert dest.chat_type == "thread"
-    assert dest.chat_id == "T9"
-    native = _dest(_discord_adapter(), Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
-    assert build_session_key(dest) == build_session_key(native)
-
-
-def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
-    """A relay connector that cannot answer get_chat_info must still key a
-    Slack thread handoff "group" (never "thread") and substitute the
-    participant under per-user isolation — parity with the native adapter's
-    shape default."""
-    from types import SimpleNamespace
-
-    from gateway.relay.adapter import RelayAdapter
-
-    a = _wire_store(RelayAdapter.__new__(RelayAdapter), tspu=True)
-    a._transport = None
-    channel_id, thread_ts, user_id = "C12345678", "1690000000.123456", "U123456"
-    dest = _dest(
-        a, Platform.SLACK, _home(Platform.SLACK, channel_id, user_id=user_id), thread_ts
-    )
-    assert dest.chat_type == "group"
-    assert dest.user_id == user_id
-    organic = build_session_key(
-        SessionSource(
-            platform=Platform.SLACK,
-            chat_id=channel_id,
-            chat_type="group",
-            user_id=user_id,
-            thread_id=thread_ts,
-        ),
-        thread_sessions_per_user=True,
-    )
-    assert build_session_key(dest, thread_sessions_per_user=True) == organic
-
-
-def _telegram_adapter():
-    from plugins.platforms.telegram.adapter import TelegramAdapter
-
-    return _wire_store(TelegramAdapter.__new__(TelegramAdapter))
-
-
-def _relay_adapter():
-    from gateway.relay.adapter import RelayAdapter
-
-    a = RelayAdapter.__new__(RelayAdapter)
-    a._transport = None
-    return _wire_store(a)
-
-
-@pytest.mark.parametrize(
-    "adapter_factory", [_telegram_adapter, _relay_adapter], ids=["native", "relay"]
-)
-def test_telegram_handoff_shape(adapter_factory):
-    """One shape table, both transports: private-chat topics key as DM topics
-    with the real user id; forum/supergroup topics key "group"."""
-    adapter = adapter_factory()
-    private = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, "123456789"), "77")
-    assert private.chat_type == "dm"
-    assert private.user_id == "123456789"
-    group = _dest(adapter, Platform.TELEGRAM, _home(Platform.TELEGRAM, "-1001234567890"), "77")
-    assert group.chat_type == "group"
-
-
-def test_no_thread_participant_policy_lands_or_substitutes():
-    """The default scope keys non-thread groups per participant: a recorded
-    home user is substituted; a legacy home WITHOUT one still LANDS on the
-    placeholder (the documented thread-creation-failure contract), warning
-    instead of hard-failing — only threaded per-user handoffs raise."""
-    import pytest
-
-    slack = _slack_adapter(chat_info={"name": "general", "type": "group"})
-    # Non-thread + no recorded user: lands with the placeholder.
-    dest = _dest(slack, Platform.SLACK, _home(Platform.SLACK, "C12345678"), None)
-    assert dest.user_id == "system:handoff"
-    # Non-thread + recorded user: substituted (asserted here for Discord too,
-    # with a store wired the way production always is).
-    from types import SimpleNamespace
-
-    discord = _discord_adapter(chat_info={"name": "general", "type": "channel"})
-    discord._session_store = SimpleNamespace(
-        resolve_session_scope=lambda source: (True, False)
-    )
-    dest = _dest(
-        discord, Platform.DISCORD, _home(Platform.DISCORD, "111", user_id="U9", chat_type="group"), None
-    )
-    assert dest.user_id == "U9"
-    # (The threaded no-user raise is pinned by
-    # test_slack_per_user_threads_substitute_the_home_user.)
-
-
-def test_base_builder_participant_policy_reaches_generic_platforms():
-    """The one authoritative builder now serves every platform: an adapter
-    with no shape override substitutes the recorded user for a
-    per-participant group key, and a legacy home without one still lands on
-    the placeholder."""
-    from gateway.platforms.signal import SignalAdapter
-
-    adapter = _wire_store(SignalAdapter.__new__(SignalAdapter))
-    home = _home(Platform.SIGNAL, "grp.abc", user_id="+1555", chat_type="group")
-    dest = _dest(adapter, Platform.SIGNAL, home, None)
-    assert dest.chat_type == "group"
-    assert dest.user_id == "+1555"
-    legacy = _dest(adapter, Platform.SIGNAL, _home(Platform.SIGNAL, "grp.abc", chat_type="group"), None)
-    assert legacy.user_id == "system:handoff"
-
-
 def test_recorded_home_identity_beats_inference():
     """/sethome-recorded chat_type is canonical: an MPIM home (G… prefix,
     recorded "dm") keys dm without any lookup, and a Discord env home
@@ -394,5 +399,3 @@ def test_recorded_home_identity_beats_inference():
     discord_home = _home(Platform.DISCORD, "111222333", chat_type="group")
     dest = _dest(_discord_adapter(), Platform.DISCORD, discord_home, None)
     assert dest.chat_type == "group"
-
-
