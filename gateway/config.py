@@ -488,6 +488,10 @@ class HomeChannel:
     # Relay egress re-attaches these values, but the connector remains the
     # authorization boundary and resolves them against its authoritative stores.
     user_id: Optional[str] = None
+    # Platform-stable alternate participant id (Signal UUID, Feishu union_id…)
+    # — build_session_key PREFERS it over user_id, so the handoff builder must
+    # restore both or participant-scoped keys fork from organic replies.
+    user_id_alt: Optional[str] = None
     scope_id: Optional[str] = None
     # Canonical conversation identity, recorded from the /sethome event's own
     # source ("dm"/"group"/"thread"). One recorded value replaces per-platform
@@ -505,6 +509,8 @@ class HomeChannel:
             result["thread_id"] = self.thread_id
         if self.user_id:
             result["user_id"] = self.user_id
+        if self.user_id_alt:
+            result["user_id_alt"] = self.user_id_alt
         if self.scope_id:
             result["scope_id"] = self.scope_id
         if self.chat_type:
@@ -519,6 +525,7 @@ class HomeChannel:
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
             user_id=str(data["user_id"]) if data.get("user_id") else None,
+            user_id_alt=str(data["user_id_alt"]) if data.get("user_id_alt") else None,
             scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
             chat_type=str(data["chat_type"]) if data.get("chat_type") else None,
         )
@@ -2016,33 +2023,36 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
         ]
 
-    def _env_home_channel(platform, chat_id, name, thread_id, existing):
-        """Env-mirror home overlay preserving same-home provenance.
+    def _env_home_channel(platform, chat_id, name, thread_id):
+        """Env-mirror home overlay preserving same-home provenance, in place.
 
         The env mirror carries only chat id / name / thread; /sethome records
-        chat_type, user_id, and scope_id in YAML. When the env names the SAME
-        chat, dropping those on reload re-strands the identity /sethome
-        captured (a Discord guild home keys as a DM, an MPIM as a group).
+        chat_type, user_id/user_id_alt, and scope_id in YAML. When the env
+        names the SAME chat, dropping those on reload re-strands the identity
+        /sethome captured (a Discord guild home keys as a DM, an MPIM as a
+        group). Reads and updates ``config.platforms[platform].home_channel``
+        itself — one call per overlay site.
         """
+        existing = config.platforms[platform].home_channel
         same = existing is not None and existing.chat_id == chat_id
-        return HomeChannel(
+        config.platforms[platform].home_channel = HomeChannel(
             platform=platform,
             chat_id=chat_id,
             name=name,
             thread_id=thread_id,
             user_id=existing.user_id if same else None,
+            user_id_alt=existing.user_id_alt if same else None,
             scope_id=existing.scope_id if same else None,
             chat_type=existing.chat_type if same else None,
         )
 
     telegram_home = getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
-        config.platforms[Platform.TELEGRAM].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.TELEGRAM,
             telegram_home,
             getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
             getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.TELEGRAM].home_channel,
         )
     
     # Discord
@@ -2053,12 +2063,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     discord_home = getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
-        config.platforms[Platform.DISCORD].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.DISCORD,
             discord_home,
             getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
             getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.DISCORD].home_channel,
         )
     
     # Reply threading mode for Discord (off/first/all)
@@ -2083,12 +2092,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
     whatsapp_home = getenv("WHATSAPP_HOME_CHANNEL")
     if whatsapp_home and Platform.WHATSAPP in config.platforms:
-        config.platforms[Platform.WHATSAPP].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.WHATSAPP,
             whatsapp_home,
             getenv("WHATSAPP_HOME_CHANNEL_NAME", "Home"),
             getenv("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.WHATSAPP].home_channel,
         )
 
     # WhatsApp Cloud API (official Business Platform via Meta).
@@ -2139,12 +2147,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
     whatsapp_cloud_home = getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
     if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
-        config.platforms[Platform.WHATSAPP_CLOUD].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.WHATSAPP_CLOUD,
             whatsapp_cloud_home,
             getenv("WHATSAPP_CLOUD_HOME_CHANNEL_NAME", "Home"),
             getenv("WHATSAPP_CLOUD_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.WHATSAPP_CLOUD].home_channel,
         )
 
     # Slack
@@ -2177,12 +2184,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             Platform.SLACK,
             PlatformConfig(enabled=False),
         )
-        slack_config.home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.SLACK,
             slack_home,
             getenv("SLACK_HOME_CHANNEL_NAME", ""),
             getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
-            slack_config.home_channel,
         )
     
     # Signal
@@ -2197,12 +2203,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         })
     signal_home = getenv("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:
-        config.platforms[Platform.SIGNAL].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.SIGNAL,
             signal_home,
             getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
             getenv("SIGNAL_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.SIGNAL].home_channel,
         )
 
     # Mattermost
@@ -2216,12 +2221,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         mattermost_config.extra["url"] = mattermost_url
     mattermost_home = getenv("MATTERMOST_HOME_CHANNEL")
     if mattermost_home and Platform.MATTERMOST in config.platforms:
-        config.platforms[Platform.MATTERMOST].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.MATTERMOST,
             mattermost_home,
             getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
             getenv("MATTERMOST_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.MATTERMOST].home_channel,
         )
 
     # Matrix
@@ -2253,12 +2257,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             matrix_config.extra["device_id"] = matrix_device_id
     matrix_home = getenv("MATRIX_HOME_ROOM")
     if matrix_home and Platform.MATRIX in config.platforms:
-        config.platforms[Platform.MATRIX].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.MATRIX,
             matrix_home,
             getenv("MATRIX_HOME_ROOM_NAME", "Home"),
             getenv("MATRIX_HOME_ROOM_THREAD_ID") or None,
-            config.platforms[Platform.MATRIX].home_channel,
         )
 
     # Home Assistant
@@ -2288,12 +2291,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         })
     email_home = getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:
-        config.platforms[Platform.EMAIL].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.EMAIL,
             email_home,
             getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
             getenv("EMAIL_HOME_ADDRESS_THREAD_ID") or None,
-            config.platforms[Platform.EMAIL].home_channel,
         )
 
     # SMS (Twilio)
@@ -2305,12 +2307,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
-        config.platforms[Platform.SMS].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.SMS,
             sms_home,
             getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             getenv("SMS_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.SMS].home_channel,
         )
 
     # API Server
@@ -2437,12 +2438,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         })
         dingtalk_home = getenv("DINGTALK_HOME_CHANNEL")
         if dingtalk_home:
-            config.platforms[Platform.DINGTALK].home_channel = _env_home_channel(
+            _env_home_channel(
                 Platform.DINGTALK,
                 dingtalk_home,
                 getenv("DINGTALK_HOME_CHANNEL_NAME", "Home"),
                 getenv("DINGTALK_HOME_CHANNEL_THREAD_ID") or None,
-                config.platforms[Platform.DINGTALK].home_channel,
             )
 
     # Feishu / Lark
@@ -2466,12 +2466,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
         feishu_home = getenv("FEISHU_HOME_CHANNEL")
         if feishu_home:
-            config.platforms[Platform.FEISHU].home_channel = _env_home_channel(
+            _env_home_channel(
                 Platform.FEISHU,
                 feishu_home,
                 getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
                 getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
-                config.platforms[Platform.FEISHU].home_channel,
             )
 
     # WeCom (Enterprise WeChat)
@@ -2490,12 +2489,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.WECOM].extra["websocket_url"] = wecom_ws_url
         wecom_home = getenv("WECOM_HOME_CHANNEL")
         if wecom_home:
-            config.platforms[Platform.WECOM].home_channel = _env_home_channel(
+            _env_home_channel(
                 Platform.WECOM,
                 wecom_home,
                 getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
                 getenv("WECOM_HOME_CHANNEL_THREAD_ID") or None,
-                config.platforms[Platform.WECOM].home_channel,
             )
 
     # WeCom callback mode (self-built apps)
@@ -2553,12 +2551,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             extra["split_multiline_messages"] = weixin_split_multiline
         weixin_home = getenv("WEIXIN_HOME_CHANNEL", "").strip()
         if weixin_home:
-            config.platforms[Platform.WEIXIN].home_channel = _env_home_channel(
+            _env_home_channel(
                 Platform.WEIXIN,
                 weixin_home,
                 getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
                 getenv("WEIXIN_HOME_CHANNEL_THREAD_ID") or None,
-                config.platforms[Platform.WEIXIN].home_channel,
             )
 
     # BlueBubbles (iMessage)
@@ -2594,12 +2591,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.BLUEBUBBLES].extra["mention_patterns"] = parsed_patterns
     bluebubbles_home = getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
-        config.platforms[Platform.BLUEBUBBLES].home_channel = _env_home_channel(
+        _env_home_channel(
             Platform.BLUEBUBBLES,
             bluebubbles_home,
             getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
             getenv("BLUEBUBBLES_HOME_CHANNEL_THREAD_ID") or None,
-            config.platforms[Platform.BLUEBUBBLES].home_channel,
         )
 
     # QQ (Official Bot API v2)
@@ -2633,7 +2629,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     "in your .env for consistency with the platform key."
                 )
         if qq_home:
-            config.platforms[Platform.QQBOT].home_channel = _env_home_channel(
+            _env_home_channel(
                 Platform.QQBOT,
                 qq_home,
                 getenv("QQBOT_HOME_CHANNEL_NAME") or getenv(qq_home_name_env, "Home"),
@@ -2642,7 +2638,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     or getenv("QQ_HOME_CHANNEL_THREAD_ID")
                     or None
                 ),
-                config.platforms[Platform.QQBOT].home_channel,
             )
 
     # Yuanbao — YUANBAO_APP_ID preferred
@@ -2669,12 +2664,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             extra["route_env"] = yuanbao_route_env
         yuanbao_home = getenv("YUANBAO_HOME_CHANNEL")
         if yuanbao_home:
-            config.platforms[Platform.YUANBAO].home_channel = _env_home_channel(
+            _env_home_channel(
                 Platform.YUANBAO,
                 yuanbao_home,
                 getenv("YUANBAO_HOME_CHANNEL_NAME", "Home"),
                 getenv("YUANBAO_HOME_CHANNEL_THREAD_ID") or None,
-                config.platforms[Platform.YUANBAO].home_channel,
             )
         yuanbao_dm_policy = getenv("YUANBAO_DM_POLICY")
         if yuanbao_dm_policy:
@@ -2850,7 +2844,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 home = seed.pop("home_channel", None)
                 config.platforms[platform].extra.update(seed)
                 if isinstance(home, dict) and home.get("chat_id"):
-                    config.platforms[platform].home_channel = _env_home_channel(
+                    _env_home_channel(
                         platform,
                         str(home["chat_id"]),
                         str(home.get("name") or "Home"),
@@ -2859,7 +2853,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                             if home.get("thread_id")
                             else None
                         ),
-                        config.platforms[platform].home_channel,
                     )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

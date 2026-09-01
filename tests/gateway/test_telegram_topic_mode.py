@@ -645,6 +645,9 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     _real_tg = TelegramAdapter.__new__(TelegramAdapter)
+    _real_tg._session_store = SimpleNamespace(
+        resolve_session_scope=lambda source: (True, False)
+    )
 
     async def _build_dest(**kwargs):
         return await TelegramAdapter.build_handoff_dest_source(_real_tg, **kwargs)

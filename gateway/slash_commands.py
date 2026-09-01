@@ -3282,6 +3282,14 @@ class GatewaySlashCommandsMixin:
                 if getattr(source, "user_id", None)
                 else None
             ),
+            # build_session_key prefers user_id_alt (Signal UUID, Feishu
+            # union_id…) — record it or participant-scoped handoff keys fork
+            # from organic replies.
+            user_id_alt=(
+                str(source.user_id_alt)
+                if getattr(source, "user_id_alt", None)
+                else None
+            ),
             scope_id=(
                 str(source.scope_id)
                 if getattr(source, "scope_id", None)

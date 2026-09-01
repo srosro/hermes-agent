@@ -43,7 +43,9 @@ def _adapter(tag):
         BasePlatformAdapter.build_handoff_dest_source, a
     )
     a._shape_handoff_dest_source = AsyncMock(return_value=None)
-    a._session_store = None
+    a._session_store = SimpleNamespace(
+        resolve_session_scope=lambda source: (True, False)
+    )
     a._bot = None
     return a
 

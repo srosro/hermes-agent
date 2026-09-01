@@ -4291,7 +4291,7 @@ class BasePlatformAdapter(ABC):
         per_user = thread_per_user if threaded else group_per_user
         if not per_user:
             return
-        if not getattr(home, "user_id", None):
+        if not getattr(home, "user_id", None) and not getattr(home, "user_id_alt", None):
             if threaded:
                 raise RuntimeError(
                     "thread handoff under per-participant session scope "
@@ -4310,7 +4310,13 @@ class BasePlatformAdapter(ABC):
                 getattr(home, "chat_id", "?"),
             )
             return
-        source.user_id = str(home.user_id)
+        # Both participant fields: build_session_key prefers user_id_alt, so
+        # restoring only the primary would fork the key on platforms that
+        # populate the alternate (Signal, DingTalk, Feishu, Google Chat).
+        source.user_id = str(home.user_id) if getattr(home, "user_id", None) else None
+        source.user_id_alt = (
+            str(home.user_id_alt) if getattr(home, "user_id_alt", None) else None
+        )
 
     async def build_handoff_dest_source(
         self,
@@ -4370,11 +4376,12 @@ class BasePlatformAdapter(ABC):
             new_thread_id=new_thread_id,
             effective_thread_id=effective_thread_id,
         )
-        store = getattr(self, "_session_store", None)
-        if store is not None:
-            self.apply_handoff_participant(
-                source, home, store.resolve_session_scope(source)
-            )
+        # The store is a hard precondition: production wires set_session_store
+        # on every adapter before it serves traffic, and the participant
+        # decision cannot be made without scope.
+        self.apply_handoff_participant(
+            source, home, self._session_store.resolve_session_scope(source)
+        )
         return source
 
     async def _shape_handoff_dest_source(

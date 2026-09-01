@@ -47,6 +47,15 @@ def _dest(adapter, platform, home, thread_id):
     )
 
 
+def _wire_store(adapter, *, tspu=False):
+    from types import SimpleNamespace
+
+    adapter._session_store = SimpleNamespace(
+        resolve_session_scope=lambda source: (True, tspu)
+    )
+    return adapter
+
+
 def _discord_adapter(*, chat_info=None, raise_lookup=False):
     from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -58,7 +67,7 @@ def _discord_adapter(*, chat_info=None, raise_lookup=False):
         return chat_info
 
     a.get_chat_info = get_chat_info
-    return a
+    return _wire_store(a)
 
 
 def _slack_adapter(*, chat_info=None, scope=None, extra=None, raise_lookup=False):
@@ -74,13 +83,7 @@ def _slack_adapter(*, chat_info=None, scope=None, extra=None, raise_lookup=False
 
     a.get_chat_info = get_chat_info
     a.scope_id_for_chat = lambda chat_id: scope
-    from types import SimpleNamespace
-
-    tspu = bool((extra or {}).get("thread_sessions_per_user", False))
-    a._session_store = SimpleNamespace(
-        resolve_session_scope=lambda source: (True, tspu)
-    )
-    return a
+    return _wire_store(a, tspu=bool((extra or {}).get("thread_sessions_per_user", False)))
 
 
 def test_discord_handoff_key_matches_organic_in_thread_key():
@@ -268,7 +271,7 @@ def test_relay_fronted_discord_thread_keys_like_native():
     its logical lanes (its class never reaches sibling overrides)."""
     from gateway.relay.adapter import RelayAdapter
 
-    a = RelayAdapter.__new__(RelayAdapter)
+    a = _wire_store(RelayAdapter.__new__(RelayAdapter))
     a._transport = None
     dest = _dest(a, Platform.DISCORD, _home(Platform.DISCORD, "P1"), "T9")
     assert dest.chat_type == "thread"
@@ -286,11 +289,8 @@ def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
 
     from gateway.relay.adapter import RelayAdapter
 
-    a = RelayAdapter.__new__(RelayAdapter)
+    a = _wire_store(RelayAdapter.__new__(RelayAdapter), tspu=True)
     a._transport = None
-    a._session_store = SimpleNamespace(
-        resolve_session_scope=lambda source: (True, True)
-    )
     channel_id, thread_ts, user_id = "C12345678", "1690000000.123456", "U123456"
     dest = _dest(
         a, Platform.SLACK, _home(Platform.SLACK, channel_id, user_id=user_id), thread_ts
@@ -313,7 +313,7 @@ def test_relay_fronted_slack_thread_keys_like_native_without_chat_info():
 def _telegram_adapter():
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
-    return TelegramAdapter.__new__(TelegramAdapter)
+    return _wire_store(TelegramAdapter.__new__(TelegramAdapter))
 
 
 def _relay_adapter():
@@ -321,7 +321,7 @@ def _relay_adapter():
 
     a = RelayAdapter.__new__(RelayAdapter)
     a._transport = None
-    return a
+    return _wire_store(a)
 
 
 @pytest.mark.parametrize(
@@ -361,41 +361,18 @@ def test_no_thread_participant_policy_lands_or_substitutes():
         discord, Platform.DISCORD, _home(Platform.DISCORD, "111", user_id="U9", chat_type="group"), None
     )
     assert dest.user_id == "U9"
-    # Threaded per-user + no recorded user: still raises.
-    tspu_extra = {"group_sessions_per_user": True, "thread_sessions_per_user": True}
-    strict = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=tspu_extra)
-    with pytest.raises(RuntimeError, match="re-run /sethome"):
-        _dest(strict, Platform.SLACK, _home(Platform.SLACK, "C12345678"), "169.1")
+    # (The threaded no-user raise is pinned by
+    # test_slack_per_user_threads_substitute_the_home_user.)
 
 
 def test_base_builder_participant_policy_reaches_generic_platforms():
-    """The one authoritative builder now serves every platform: a generic
-    adapter with no shape override substitutes the recorded user for a
+    """The one authoritative builder now serves every platform: an adapter
+    with no shape override substitutes the recorded user for a
     per-participant group key, and a legacy home without one still lands on
     the placeholder."""
-    from types import SimpleNamespace
+    from gateway.platforms.signal import SignalAdapter
 
-    from gateway.platforms.base import BasePlatformAdapter
-
-    class _GenericAdapter(BasePlatformAdapter):
-        def __init__(self):  # bypass base wiring; hook needs only the store
-            self._session_store = SimpleNamespace(
-                resolve_session_scope=lambda source: (True, False)
-            )
-
-        async def connect(self):  # pragma: no cover - abstract fillers
-            return True
-
-        async def disconnect(self):  # pragma: no cover
-            return None
-
-        async def send(self, *a, **k):  # pragma: no cover
-            return None
-
-        async def get_chat_info(self, *a, **k):  # pragma: no cover
-            return {}
-
-    adapter = _GenericAdapter()
+    adapter = _wire_store(SignalAdapter.__new__(SignalAdapter))
     home = _home(Platform.SIGNAL, "grp.abc", user_id="+1555", chat_type="group")
     dest = _dest(adapter, Platform.SIGNAL, home, None)
     assert dest.chat_type == "group"
