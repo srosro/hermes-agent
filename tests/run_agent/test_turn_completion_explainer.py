@@ -78,10 +78,6 @@ def test_explanation_quiet_for_empty_reason():
     assert AIAgent._format_turn_completion_explanation("guardrail_halt") == ""
 
 
-
-
-
-
 def test_explanation_for_max_iterations_reached_prefix_match():
     """``max_iterations_reached(...)`` carries a parenthetical suffix."""
     out = AIAgent._format_turn_completion_explanation(
@@ -556,8 +552,6 @@ def test_gateway_status_event_key_strips_parenthetical_suffix():
     event_type, message = turn_stops[0]
     assert re.fullmatch(r"turn_stop\.max_iterations_reached\.[0-9a-f]{8}", event_type)
     assert "No reply:" in message
-
-
 
 
 def test_gateway_same_reason_turns_get_distinct_status_keys():
