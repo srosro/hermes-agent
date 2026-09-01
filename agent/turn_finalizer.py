@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -593,9 +594,13 @@ def finalize_turn(
                         # prose: in group chats an inline ⚠️ warning reads as
                         # the agent talking and cascades agent-to-agent
                         # (plow-pbc/agent-mgr#107).  The class information is
-                        # preserved in the event key (``turn_stop.<reason>``,
-                        # per-turn parenthetical suffix stripped so adapters
-                        # can route on a stable key) and adapters choose
+                        # preserved in the event key
+                        # (``turn_stop.<reason>.<nonce>`` — parenthetical
+                        # suffix stripped so adapters can route on the class,
+                        # nonce appended so adapters with edit-in-place
+                        # ``send_or_update_status`` semantics post a fresh
+                        # bubble per turn instead of silently editing the
+                        # previous same-reason one) and adapters choose
                         # whether to deliver or drop the frame.  CLI/TUI have
                         # no status_callback and keep the inline substitution
                         # — #34452's "never silent" holds where a human is at
@@ -604,17 +609,26 @@ def finalize_turn(
                         if _status_cb:
                             _reason_key = str(_turn_exit_reason).split("(", 1)[0]
                             try:
-                                _status_cb(f"turn_stop.{_reason_key}", _explanation)
+                                _status_cb(
+                                    f"turn_stop.{_reason_key}.{uuid.uuid4().hex[:8]}",
+                                    _explanation,
+                                )
                             except Exception:
                                 logger.debug(
                                     "status_callback error for turn_stop explainer",
                                     exc_info=True,
                                 )
-                            if _is_empty_terminal:
-                                # Clear the "(empty)" sentinel so the gateway
-                                # delivers nothing rather than the sentinel;
-                                # a partial fragment stays as-is.
-                                final_response = ""
+                                if _is_empty_terminal:
+                                    # Status delivery failed: fall back to the
+                                    # inline explanation so an abnormal end is
+                                    # never silent (#34452), even here.
+                                    final_response = _explanation
+                            else:
+                                if _is_empty_terminal:
+                                    # Clear the "(empty)" sentinel so the
+                                    # gateway delivers nothing rather than the
+                                    # sentinel; a partial fragment stays as-is.
+                                    final_response = ""
                         elif _is_empty_terminal:
                             # Replace the bare "(empty)"/blank sentinel with
                             # the actionable explanation.

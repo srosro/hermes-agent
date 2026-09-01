@@ -18,6 +18,7 @@ pass identically in CI and locally.
 """
 
 import os
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -478,7 +479,7 @@ def test_gateway_empty_exhausted_emits_turn_stop_status_not_final_response():
     turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
     assert len(turn_stops) == 1
     event_type, message = turn_stops[0]
-    assert event_type == "turn_stop.empty_response_exhausted"
+    assert re.fullmatch(r"turn_stop\.empty_response_exhausted\.[0-9a-f]{8}", event_type)
     assert "No reply:" in message
     assert result["final_response"] == ""
 
@@ -513,7 +514,7 @@ def test_gateway_partial_fragment_keeps_fragment_and_moves_reason_to_status():
     turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
     assert len(turn_stops) == 1
     event_type, message = turn_stops[0]
-    assert event_type == "turn_stop.partial_stream_recovery"
+    assert re.fullmatch(r"turn_stop\.partial_stream_recovery\.[0-9a-f]{8}", event_type)
     assert "No reply:" in message
 
 
@@ -553,7 +554,58 @@ def test_gateway_status_event_key_strips_parenthetical_suffix():
     turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
     assert len(turn_stops) == 1
     event_type, message = turn_stops[0]
-    assert event_type == "turn_stop.max_iterations_reached"
+    assert re.fullmatch(r"turn_stop\.max_iterations_reached\.[0-9a-f]{8}", event_type)
     assert "No reply:" in message
 
 
+
+
+def test_gateway_same_reason_turns_get_distinct_status_keys():
+    """Adapters with edit-in-place send_or_update_status semantics key their
+    message cache on the status key; two same-reason turns must therefore
+    carry distinct keys so the second explainer posts a fresh bubble instead
+    of silently editing the first."""
+    agent = _make_agent(max_iterations=10)
+    events = _attach_status_recorder(agent)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="stop") for _ in range(16)
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        agent.run_conversation("do something")
+        agent.run_conversation("do something else")
+
+    keys = [e[0] for e in events if e[0].startswith("turn_stop.")]
+    assert len(keys) == 2
+    assert all(
+        re.fullmatch(r"turn_stop\.empty_response_exhausted\.[0-9a-f]{8}", k)
+        for k in keys
+    )
+    assert keys[0] != keys[1]
+
+
+def test_gateway_status_callback_failure_falls_back_to_inline_explanation():
+    """A raising status_callback must not produce a silent abnormal end:
+    the explainer falls back to the inline final_response substitution
+    (#34452's guarantee) instead of clearing it."""
+    agent = _make_agent(max_iterations=10)
+    def _boom(event_type, message):
+        raise RuntimeError("adapter down")
+    agent.status_callback = _boom
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="stop") for _ in range(8)
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "empty_response_exhausted"
+    assert "No reply:" in result["final_response"]
