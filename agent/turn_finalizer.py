@@ -605,6 +605,13 @@ def finalize_turn(
                         # no status_callback and keep the inline substitution
                         # — #34452's "never silent" holds where a human is at
                         # a terminal.
+                        def _inline_fallback() -> str:
+                            # The explanation replaces an empty terminal and
+                            # rides behind a partial fragment.
+                            if _is_empty_terminal:
+                                return _explanation
+                            return _stripped + "\n\n" + _explanation
+
                         _status_cb = getattr(agent, "status_callback", None)
                         if _status_cb:
                             _reason_key = str(_turn_exit_reason).split("(", 1)[0]
@@ -620,32 +627,19 @@ def finalize_turn(
                                 )
                                 # Status delivery failed: fall back to the
                                 # inline substitution so an abnormal end is
-                                # never silent (#34452), even here — the
-                                # explanation replaces an empty terminal and
-                                # rides behind a partial fragment.
-                                if _is_empty_terminal:
-                                    final_response = _explanation
-                                else:
-                                    final_response = (
-                                        _stripped + "\n\n" + _explanation
-                                    )
+                                # never silent (#34452), even here.
+                                final_response = _inline_fallback()
                             else:
                                 if _is_empty_terminal:
                                     # Clear the "(empty)" sentinel so the
                                     # gateway delivers nothing rather than the
                                     # sentinel; a partial fragment stays as-is.
                                     final_response = ""
-                        elif _is_empty_terminal:
-                            # Replace the bare "(empty)"/blank sentinel with
-                            # the actionable explanation.
-                            final_response = _explanation
                         else:
-                            # Keep the partial fragment, append the reason so
-                            # the user sees both what arrived and why it
-                            # stopped.
-                            final_response = (
-                                _stripped + "\n\n" + _explanation
-                            )
+                            # No status channel (CLI/TUI): the explanation is
+                            # delivered inline, replacing the sentinel or
+                            # riding behind the fragment.
+                            final_response = _inline_fallback()
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
