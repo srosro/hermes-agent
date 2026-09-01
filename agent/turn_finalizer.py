@@ -587,7 +587,35 @@ def finalize_turn(
                         getattr(agent, "_last_persistence_error_cause", None),
                     )
                     if _explanation:
-                        if _is_empty_terminal:
+                        # Messaging-gateway surfaces (the only wirers of
+                        # ``status_callback`` — gateway/run.py) get the
+                        # explanation as a status frame instead of assistant
+                        # prose: in group chats an inline ⚠️ warning reads as
+                        # the agent talking and cascades agent-to-agent
+                        # (plow-pbc/agent-mgr#107).  The class information is
+                        # preserved in the event key (``turn_stop.<reason>``,
+                        # per-turn parenthetical suffix stripped so adapters
+                        # can route on a stable key) and adapters choose
+                        # whether to deliver or drop the frame.  CLI/TUI have
+                        # no status_callback and keep the inline substitution
+                        # — #34452's "never silent" holds where a human is at
+                        # a terminal.
+                        _status_cb = getattr(agent, "status_callback", None)
+                        if _status_cb:
+                            _reason_key = str(_turn_exit_reason).split("(", 1)[0]
+                            try:
+                                _status_cb(f"turn_stop.{_reason_key}", _explanation)
+                            except Exception:
+                                logger.debug(
+                                    "status_callback error for turn_stop explainer",
+                                    exc_info=True,
+                                )
+                            if _is_empty_terminal:
+                                # Clear the "(empty)" sentinel so the gateway
+                                # delivers nothing rather than the sentinel;
+                                # a partial fragment stays as-is.
+                                final_response = ""
+                        elif _is_empty_terminal:
                             # Replace the bare "(empty)"/blank sentinel with
                             # the actionable explanation.
                             final_response = _explanation

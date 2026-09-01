@@ -438,3 +438,122 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
+# --------------------------------------------------------------------------
+# 4. Gateway surfaces: the explanation rides the status channel, not
+#    final_response.  ``agent.status_callback`` is wired only by the
+#    messaging gateway (gateway/run.py), so its presence is the surface
+#    discriminator: with it set, the explainer must emit one
+#    ``turn_stop.<reason>`` status frame and leave final_response free of
+#    diagnostic text — adapters decide whether to deliver or drop the frame.
+#    CLI/TUI (no status_callback) keep the inline substitution, which the
+#    section-3 tests above pin.
+# --------------------------------------------------------------------------
+def _attach_status_recorder(agent) -> list:
+    events = []
+    agent.status_callback = lambda event_type, message: events.append(
+        (event_type, message)
+    )
+    return events
+
+
+def test_gateway_empty_exhausted_emits_turn_stop_status_not_final_response():
+    """On a gateway surface an exhausted-empty turn must emit exactly one
+    ``turn_stop.empty_response_exhausted`` status frame carrying the
+    explanation, and final_response must stay empty (no '(empty)' sentinel,
+    no inline warning for the chat)."""
+    agent = _make_agent(max_iterations=10)
+    events = _attach_status_recorder(agent)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="stop") for _ in range(8)
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "empty_response_exhausted"
+    turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
+    assert len(turn_stops) == 1
+    event_type, message = turn_stops[0]
+    assert event_type == "turn_stop.empty_response_exhausted"
+    assert "No reply:" in message
+    assert result["final_response"] == ""
+
+
+def test_gateway_partial_fragment_keeps_fragment_and_moves_reason_to_status():
+    """Partial-stream recovery on a gateway surface: the recovered fragment
+    remains the final_response verbatim; only the explanation moves to the
+    status channel."""
+    agent = _make_agent(max_iterations=10)
+    events = _attach_status_recorder(agent)
+    empty_stub = _mock_response(content=None, finish_reason="stop")
+    recovered = (
+        "I inspected the running gateway and found that the current turn "
+        "stopped after the provider stream timed out."
+    )
+
+    def _fake_api_call(_api_kwargs):
+        agent._current_streamed_assistant_text = recovered
+        return empty_stub
+
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "partial_stream_recovery"
+    assert result["final_response"] == recovered
+    assert "No reply:" not in result["final_response"]
+    turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
+    assert len(turn_stops) == 1
+    event_type, message = turn_stops[0]
+    assert event_type == "turn_stop.partial_stream_recovery"
+    assert "No reply:" in message
+
+
+def test_gateway_status_event_key_strips_parenthetical_suffix():
+    """Parameterized exit reasons like ``max_iterations_reached(10/10)``
+    must produce a stable event key without the per-turn suffix, so adapter
+    routing rules can match on it."""
+    agent = _make_agent(max_iterations=10)
+    events = _attach_status_recorder(agent)
+    # Empty final response + a parameterized budget-exhaustion exit: drive
+    # the finalizer directly, faking the loop's exit state.
+    from agent.turn_finalizer import finalize_turn
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch.object(agent, "_handle_max_iterations", return_value=""),
+    ):
+        result = finalize_turn(
+            agent,
+            final_response="",
+            api_call_count=10,
+            interrupted=False,
+            failed=False,
+            messages=[{"role": "user", "content": "hi"}],
+            conversation_history=[],
+            effective_task_id=None,
+            turn_id=str(uuid.uuid4()),
+            user_message="hi",
+            original_user_message="hi",
+            _should_review_memory=False,
+            _turn_exit_reason="max_iterations_reached(10/10)",
+        )
+
+    assert result["final_response"] == ""
+    turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
+    assert len(turn_stops) == 1
+    event_type, message = turn_stops[0]
+    assert event_type == "turn_stop.max_iterations_reached"
+    assert "No reply:" in message
+
+
