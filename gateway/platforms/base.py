@@ -4234,7 +4234,10 @@ class BasePlatformAdapter(ABC):
     def apply_telegram_handoff_shape(source: "SessionSource", home: Any, effective_thread_id: Optional[str]) -> None:
         """Telegram private-chat topics key as DM topics with the real user
         id; forum/supergroup topics key ``"group"`` like organic replies.
-        Shared by the native Telegram override and the relay's lane."""
+        A home with an explicitly recorded ``chat_type`` is already honored
+        by the caller's initial default — this hook only overrides the
+        legacy (identity never recorded) and thread-present cases. Shared
+        by the native Telegram override and the relay's lane."""
         from gateway.delivery import looks_like_telegram_private_chat_id
 
         home_chat_id = str(home.chat_id)
