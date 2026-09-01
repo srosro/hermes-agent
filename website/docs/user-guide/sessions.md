@@ -250,7 +250,7 @@ What happens:
 - Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
 - `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
 
-**Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.
+**Group home channels:** a `/sethome` run in a group records the conversation's identity, and handoffs into that home retain its group (and, under per-participant scoping, participant) session key — the next organic reply continues the handed-off conversation. Only legacy or manually env-configured homes that never recorded a `chat_type` fall back to inference; re-run `/sethome` in the target conversation to record it.
 
 ## Session Naming
 

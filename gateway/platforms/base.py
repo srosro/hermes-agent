@@ -4241,7 +4241,11 @@ class BasePlatformAdapter(ABC):
         if looks_like_telegram_private_chat_id(home_chat_id):
             source.chat_type = "dm"
             source.user_id = home_chat_id
-        elif effective_thread_id:
+        elif effective_thread_id or not getattr(home, "chat_type", None):
+            # A non-private chat id IS a group/supergroup — organic replies
+            # key "group" whether or not a topic exists, so a legacy home
+            # (no recorded identity) must not keep the "dm" legacy default
+            # even when topic creation failed.
             source.chat_type = "group"
 
     @staticmethod

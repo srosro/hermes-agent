@@ -233,6 +233,15 @@ PARITY_CASES = [
         id="telegram-supergroup-topic-relay",
     ),
     pytest.param(
+        _telegram_adapter,
+        Platform.TELEGRAM,
+        dict(chat_id="-1001234567890", user_id="208214988"),
+        None,
+        dict(chat_id="-1001234567890", chat_type="group", user_id="208214988"),
+        dict(),
+        id="telegram-legacy-group-failed-topic-native",
+    ),
+    pytest.param(
         _signal_adapter,
         Platform.SIGNAL,
         dict(chat_id="grp.abc", user_id="+1555", chat_type="group"),
