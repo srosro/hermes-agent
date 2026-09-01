@@ -291,6 +291,13 @@ def test_participant_policy_triangle():
     landed = _dest(slack, Platform.SLACK, _home(Platform.SLACK, "C12345678"), None)
     assert landed.user_id == "system:handoff"
 
+    # The landing contract reaches every platform through the base builder,
+    # not just Slack: a no-override adapter behaves identically.
+    generic = _dest(
+        _signal_adapter(), Platform.SIGNAL, _home(Platform.SIGNAL, "grp.abc", chat_type="group"), None
+    )
+    assert generic.user_id == "system:handoff"
+
     tspu_extra = {"group_sessions_per_user": True, "thread_sessions_per_user": True}
     strict = _slack_adapter(chat_info={"name": "general", "type": "group"}, extra=tspu_extra)
     substituted = _dest(
