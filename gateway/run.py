@@ -1112,6 +1112,25 @@ async def _deliver_turn_stop_frame(adapter, chat_id, result, explanation):
         return None
 
 
+async def _deliver_and_strip_turn_stop(adapter, platform, chat_id, result, text):
+    """The whole turn-stop delivery contract in one place, for every egress.
+
+    Sanitize ALWAYS runs (secret redaction, provider-error rewrites); the
+    turn-stop explanation is stripped from the prose only after the frame is
+    CONFIRMED delivered on the adapter's diagnostic channel — a failed or
+    unconfirmed delivery keeps the inline copy, so an abnormal end is never
+    silent (#34452).
+    """
+    explanation = _turn_stop_explanation_for_delivery(adapter, result)
+    delivered = False
+    if explanation:
+        res = await _deliver_turn_stop_frame(adapter, chat_id, result, explanation)
+        delivered = bool(getattr(res, "success", False))
+    return _sanitize_gateway_final_response(
+        platform, text, explanation if delivered else None
+    )
+
+
 def _turn_stop_explanation_for_delivery(adapter, result) -> Optional[str]:
     """The explanation to strip from this platform's chat prose.
 
@@ -22414,23 +22433,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                _ts_adapter = self._adapter_for_source(source)
-                _ts_explanation = _turn_stop_explanation_for_delivery(
-                    _ts_adapter, agent_result
-                )
-                _ts_delivered = False
-                if _ts_explanation:
-                    # Deliver first: the inline copy is stripped only once the
-                    # frame is confirmed on the diagnostic channel; a failed
-                    # or unconfirmed delivery keeps inline — never silent.
-                    _ts_res = await _deliver_turn_stop_frame(
-                        _ts_adapter, source.chat_id, agent_result, _ts_explanation
-                    )
-                    _ts_delivered = bool(getattr(_ts_res, "success", False))
-                response = _sanitize_gateway_final_response(
+                response = await _deliver_and_strip_turn_stop(
+                    self._adapter_for_source(source),
                     source.platform,
+                    source.chat_id,
+                    agent_result,
                     response,
-                    _ts_explanation if _ts_delivered else None,
                 )
 
             # Ordering contract: the agent thread already updated the contextvar
@@ -24698,19 +24706,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
 
-            # Same turn-stop seam as the main path: deliver the diagnostic on
-            # the adapter's channel first, and strip the inline copy only on
-            # confirmed delivery (a failed frame keeps inline — never silent).
+            # Same turn-stop seam (and the same unconditional sanitize) as
+            # the main path.
             if result:
-                _bg_ts = _turn_stop_explanation_for_delivery(adapter, result)
-                if _bg_ts:
-                    _bg_res = await _deliver_turn_stop_frame(
-                        adapter, source.chat_id, result, _bg_ts
-                    )
-                    if getattr(_bg_res, "success", False):
-                        response = _sanitize_gateway_final_response(
-                            source.platform, response, _bg_ts
-                        )
+                response = await _deliver_and_strip_turn_stop(
+                    adapter, source.platform, source.chat_id, result, response
+                )
 
             # Background tasks start a fresh conversation (no prior history),
             # so history_offset=0: every message in the run belongs to this

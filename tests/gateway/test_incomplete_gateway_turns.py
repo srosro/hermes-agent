@@ -248,3 +248,45 @@ def test_deliver_turn_stop_frame_failures_never_propagate():
     assert asyncio.run(
         gateway_run._deliver_turn_stop_frame(_NoHook(), "c", result, _EXPLAINER)
     ) is None
+
+
+@pytest.mark.parametrize(
+    ("delivery_ok", "expect_stripped"),
+    [(True, True), (False, False)],
+    ids=["confirmed-delivery-strips", "failed-delivery-keeps-inline"],
+)
+def test_deliver_and_strip_contract(delivery_ok, expect_stripped):
+    """The one delivery contract for every egress (main path and /bg alike):
+    sanitize always runs; the inline explainer is stripped only after the
+    frame is CONFIRMED delivered — a failed delivery keeps it (never silent)."""
+
+    class _Diag:
+        delivers_diagnostic_status = True
+
+        async def send_or_update_status(self, chat_id, status_key, content, metadata=None):
+            return SendResult(success=delivery_ok)
+
+    result = {
+        "turn_exit_reason": "empty_response_exhausted",
+        "turn_stop_explanation": _EXPLAINER,
+    }
+    out = asyncio.run(
+        gateway_run._deliver_and_strip_turn_stop(
+            _Diag(), Platform.SLACK, "chat-1", result, _EXPLAINER
+        )
+    )
+    assert out == ("" if expect_stripped else _EXPLAINER)
+
+
+def test_deliver_and_strip_sanitizes_even_without_turn_stop():
+    """A normal response still gets the ordinary sanitize pass (the /bg path
+    previously skipped it when no frame was delivered)."""
+    hookless = CaptureSlackAdapter()
+    result = {"turn_exit_reason": "text_response(finish_reason=stop)", "turn_stop_explanation": None}
+    text = "Dinner is at 7."
+    out = asyncio.run(
+        gateway_run._deliver_and_strip_turn_stop(
+            hookless, Platform.SLACK, "chat-1", result, text
+        )
+    )
+    assert out == text
