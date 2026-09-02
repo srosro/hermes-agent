@@ -31804,6 +31804,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
+                    elif run_generation is not None and not self._is_session_run_current(
+                        session_key, run_generation
+                    ):
+                        # Same currency gate as the delivery seam: a /stop,
+                        # /new, or replacement run superseded this result —
+                        # its first response must not be published either.
+                        logger.info(
+                            "Queued follow-up for session %s: run superseded; skipping stale first-response delivery.",
+                            session_key or "?",
+                        )
                     elif first_response:
                         try:
                             if _already_streamed:
