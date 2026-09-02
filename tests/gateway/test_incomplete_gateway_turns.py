@@ -153,3 +153,63 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),
     ]
+
+
+# --------------------------------------------------------------------------
+# Turn-stop explainer delivery boundary (plow-pbc/agent-mgr#107)
+# The finalizer keeps the explainer inline on every surface and emits a
+# turn_stop.* status frame; these pin the gateway's consumer side — chat
+# surfaces shed the prose (adapters gate the frame), raw surfaces keep it.
+# --------------------------------------------------------------------------
+def _explainer() -> str:
+    from run_agent import TURN_STOP_EXPLAINER_PREFIX
+
+    return TURN_STOP_EXPLAINER_PREFIX + "the model returned empty content after retries."
+
+
+def test_sanitize_strips_turn_stop_explainer_for_chat_surfaces():
+    assert gateway_run._sanitize_gateway_final_response(Platform.SLACK, _explainer()) == ""
+
+
+def test_sanitize_keeps_fragment_and_sheds_appended_explainer():
+    fragment = "I inspected the running gateway and found the stream timed out."
+    out = gateway_run._sanitize_gateway_final_response(
+        Platform.SLACK, fragment + "\n\n" + _explainer()
+    )
+    assert out == fragment
+
+
+def test_sanitize_passes_turn_stop_explainer_for_raw_surfaces():
+    raw = next(iter(gateway_run._GATEWAY_RAW_TEXT_PLATFORMS))
+    assert gateway_run._sanitize_gateway_final_response(raw, _explainer()) == _explainer()
+
+
+def test_status_coro_drops_turn_stop_for_hookless_adapter():
+    adapter = CaptureSlackAdapter()  # no send_or_update_status hook
+
+    result = asyncio.run(
+        gateway_run._send_or_update_status_coro(
+            adapter, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _explainer(), None
+        )
+    )
+    assert result is None
+    assert adapter.sent == []
+
+
+def test_status_coro_delivers_turn_stop_to_hooked_adapter():
+    adapter = CaptureSlackAdapter()
+    calls = []
+
+    async def hook(chat_id, status_key, content, metadata=None):
+        calls.append((chat_id, status_key, content))
+        return SendResult(success=True)
+
+    adapter.send_or_update_status = hook
+    result = asyncio.run(
+        gateway_run._send_or_update_status_coro(
+            adapter, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _explainer(), None
+        )
+    )
+    assert result.success
+    assert calls and calls[0][1] == "turn_stop.empty_response_exhausted.abcd1234"
+    assert adapter.sent == []

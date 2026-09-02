@@ -588,30 +588,23 @@ def finalize_turn(
                         getattr(agent, "_last_persistence_error_cause", None),
                     )
                     if _explanation:
-                        # Messaging-gateway surfaces (the only wirers of
-                        # ``status_callback`` — gateway/run.py) get the
-                        # explanation as a status frame instead of assistant
-                        # prose: in group chats an inline ⚠️ warning reads as
-                        # the agent talking and cascades agent-to-agent
-                        # (plow-pbc/agent-mgr#107).  The class information is
-                        # preserved in the event key
-                        # (``turn_stop.<reason>.<nonce>`` — parenthetical
-                        # suffix stripped so adapters can route on the class,
-                        # nonce appended so adapters with edit-in-place
-                        # ``send_or_update_status`` semantics post a fresh
-                        # bubble per turn instead of silently editing the
-                        # previous same-reason one) and adapters choose
-                        # whether to deliver or drop the frame.  CLI/TUI have
-                        # no status_callback and keep the inline substitution
-                        # — #34452's "never silent" holds where a human is at
-                        # a terminal.
-                        def _inline_fallback() -> str:
-                            # The explanation replaces an empty terminal and
-                            # rides behind a partial fragment.
-                            if _is_empty_terminal:
-                                return _explanation
-                            return _stripped + "\n\n" + _explanation
-
+                        # Producer only: the explanation always lands inline
+                        # (replacing the "(empty)" sentinel, or riding behind
+                        # a partial fragment), and — when a status channel is
+                        # wired — is ALSO emitted as a ``turn_stop.*`` frame.
+                        # Routing is the delivery layer's job: the messaging
+                        # gateway strips the inline prefix for chat surfaces
+                        # (an inline ⚠️ warning in a group chat reads as the
+                        # agent talking and cascades agent-to-agent,
+                        # plow-pbc/agent-mgr#107) and their adapters gate the
+                        # frame; raw-text surfaces (CLI/TUI/API) keep the
+                        # inline text — #34452's "never silent" holds
+                        # everywhere with no per-surface branching here.
+                        # Event key: ``turn_stop.<reason>.<nonce>`` — the
+                        # parenthetical suffix is stripped so adapters route
+                        # on the class; the nonce makes edit-in-place
+                        # adapters post a fresh bubble per turn instead of
+                        # silently editing the previous same-reason one.
                         _status_cb = getattr(agent, "status_callback", None)
                         if _status_cb:
                             _reason_key = str(_turn_exit_reason).split("(", 1)[0]
@@ -625,21 +618,10 @@ def finalize_turn(
                                     "status_callback error for turn_stop explainer",
                                     exc_info=True,
                                 )
-                                # Status delivery failed: fall back to the
-                                # inline substitution so an abnormal end is
-                                # never silent (#34452), even here.
-                                final_response = _inline_fallback()
-                            else:
-                                if _is_empty_terminal:
-                                    # Clear the "(empty)" sentinel so the
-                                    # gateway delivers nothing rather than the
-                                    # sentinel; a partial fragment stays as-is.
-                                    final_response = ""
+                        if _is_empty_terminal:
+                            final_response = _explanation
                         else:
-                            # No status channel (CLI/TUI): the explanation is
-                            # delivered inline, replacing the sentinel or
-                            # riding behind the fragment.
-                            final_response = _inline_fallback()
+                            final_response = _stripped + "\n\n" + _explanation
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 

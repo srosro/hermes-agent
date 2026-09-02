@@ -1019,6 +1019,24 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
+    # Turn-stop explainers are diagnostics, not assistant prose. The finalizer
+    # keeps them inline for raw-text surfaces (passthrough above) and also
+    # emits a ``turn_stop.*`` status frame; chat surfaces get only the frame —
+    # an inline ⚠️ warning in a group chat reads as the agent talking and
+    # cascades agent-to-agent (plow-pbc/agent-mgr#107). A partial fragment
+    # keeps its recovered text and sheds just the appended explainer.
+    # Lazy import like _sanitize_surrogates below: run_agent's import graph is
+    # heavy, and by the time a final response exists it is already in
+    # sys.modules.
+    from run_agent import TURN_STOP_EXPLAINER_PREFIX
+
+    _stripped_text = str(text).strip()
+    if _stripped_text.startswith(TURN_STOP_EXPLAINER_PREFIX):
+        return ""
+    _explainer_at = _stripped_text.find("\n\n" + TURN_STOP_EXPLAINER_PREFIX)
+    if _explainer_at != -1:
+        text = _stripped_text[:_explainer_at]
+
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
@@ -1080,6 +1098,13 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
+    if str(status_key).startswith("turn_stop."):
+        # A turn-stop explainer is a diagnostic frame for adapters that can
+        # gate or edit it; on a hookless adapter the plain-send fallback would
+        # land it as ordinary chat prose — the exact inline warning the
+        # sanitize boundary just stripped. Drop it instead.
+        logger.debug("dropping turn_stop status for hookless adapter (%s)", chat_id)
+        return None
     return await adapter.send(chat_id, content, metadata=metadata)
 
 

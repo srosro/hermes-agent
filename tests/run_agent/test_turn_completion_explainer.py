@@ -453,7 +453,7 @@ def _attach_status_recorder(agent) -> list:
     return events
 
 
-def test_gateway_empty_exhausted_emits_turn_stop_status_not_final_response():
+def test_gateway_empty_exhausted_emits_turn_stop_status_and_keeps_inline():
     """On a gateway surface an exhausted-empty turn must emit exactly one
     ``turn_stop.empty_response_exhausted`` status frame carrying the
     explanation, and final_response must stay empty (no '(empty)' sentinel,
@@ -477,10 +477,12 @@ def test_gateway_empty_exhausted_emits_turn_stop_status_not_final_response():
     event_type, message = turn_stops[0]
     assert re.fullmatch(r"turn_stop\.empty_response_exhausted\.[0-9a-f]{8}", event_type)
     assert "No reply:" in message
-    assert result["final_response"] == ""
+    # Producer keeps the inline explanation on every surface; the messaging
+    # gateway's sanitize boundary is what strips it for chat platforms.
+    assert "No reply:" in result["final_response"]
 
 
-def test_gateway_partial_fragment_keeps_fragment_and_moves_reason_to_status():
+def test_gateway_partial_fragment_keeps_fragment_and_appends_reason():
     """Partial-stream recovery on a gateway surface: the recovered fragment
     remains the final_response verbatim; only the explanation moves to the
     status channel."""
@@ -505,8 +507,10 @@ def test_gateway_partial_fragment_keeps_fragment_and_moves_reason_to_status():
         result = agent.run_conversation("do something")
 
     assert result["turn_exit_reason"] == "partial_stream_recovery"
-    assert result["final_response"] == recovered
-    assert "No reply:" not in result["final_response"]
+    assert result["final_response"].startswith(recovered)
+    # Explainer rides behind the fragment on every surface; the messaging
+    # gateway's sanitize boundary sheds it for chat platforms.
+    assert "No reply:" in result["final_response"]
     turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
     assert len(turn_stops) == 1
     event_type, message = turn_stops[0]
@@ -546,7 +550,7 @@ def test_gateway_status_event_key_strips_parenthetical_suffix():
             _turn_exit_reason="max_iterations_reached(10/10)",
         )
 
-    assert result["final_response"] == ""
+    assert "No reply:" in result["final_response"]
     turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
     assert len(turn_stops) == 1
     event_type, message = turn_stops[0]
@@ -582,7 +586,7 @@ def test_gateway_same_reason_turns_get_distinct_status_keys():
     assert keys[0] != keys[1]
 
 
-def test_gateway_status_callback_failure_falls_back_to_inline_explanation():
+def test_gateway_status_callback_failure_never_loses_inline_explanation():
     """A raising status_callback must not produce a silent abnormal end:
     the explainer falls back to the inline final_response substitution
     (#34452's guarantee) instead of clearing it."""
@@ -602,34 +606,4 @@ def test_gateway_status_callback_failure_falls_back_to_inline_explanation():
         result = agent.run_conversation("do something")
 
     assert result["turn_exit_reason"] == "empty_response_exhausted"
-    assert "No reply:" in result["final_response"]
-
-
-def test_gateway_status_callback_failure_appends_reason_to_partial_fragment():
-    """Callback failure on a partial-stream-recovery turn: the fragment stays
-    and the explanation is appended inline — never silently lost."""
-    agent = _make_agent(max_iterations=10)
-    def _boom(event_type, message):
-        raise RuntimeError("adapter down")
-    agent.status_callback = _boom
-    empty_stub = _mock_response(content=None, finish_reason="stop")
-    recovered = (
-        "I inspected the running gateway and found that the current turn "
-        "stopped after the provider stream timed out."
-    )
-
-    def _fake_api_call(_api_kwargs):
-        agent._current_streamed_assistant_text = recovered
-        return empty_stub
-
-    with (
-        patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        result = agent.run_conversation("do something")
-
-    assert result["turn_exit_reason"] == "partial_stream_recovery"
-    assert result["final_response"].startswith(recovered)
     assert "No reply:" in result["final_response"]
