@@ -1089,6 +1089,29 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+async def _deliver_turn_stop_frame(adapter, chat_id, result, explanation):
+    """Post the turn-stop diagnostic on the adapter's diagnostic channel.
+
+    The single delivery seam: callers invoke this only after
+    ``_turn_stop_explanation_for_delivery`` returned the explanation (so the
+    inline copy was stripped). Key: ``turn_stop.<reason>.<nonce>`` — the
+    parenthetical suffix is stripped so adapters route on the class, and the
+    per-turn nonce makes edit-in-place status caches post a fresh bubble per
+    turn. Best-effort by design: the except covers a missing/non-callable
+    ``send_or_update_status`` as much as delivery failure — either way only a
+    diagnostic is lost.
+    """
+    import uuid as _uuid
+
+    reason = str(result.get("turn_exit_reason") or "unknown").split("(", 1)[0]
+    key = f"turn_stop.{reason}.{_uuid.uuid4().hex[:8]}"
+    try:
+        return await adapter.send_or_update_status(chat_id, key, explanation)
+    except Exception:
+        logger.debug("turn_stop frame delivery failed for %s", chat_id, exc_info=True)
+        return None
+
+
 def _turn_stop_explanation_for_delivery(adapter, result) -> Optional[str]:
     """The explanation to strip from this platform's chat prose.
 
@@ -22397,28 +22420,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source.platform, response, _ts_explanation
                 )
                 if _ts_explanation:
-                    # The single delivery seam for the turn-stop diagnostic:
-                    # the inline copy was just stripped, so post the frame on
-                    # the adapter's non-conversational channel. Key carries
-                    # the reason class plus a per-turn nonce so edit-in-place
-                    # status caches post a fresh bubble per turn. Best-effort:
-                    # a delivery failure only loses a diagnostic.
-                    try:
-                        import uuid as _uuid
-
-                        _ts_reason = str(
-                            agent_result.get("turn_exit_reason") or "unknown"
-                        ).split("(", 1)[0]
-                        await _ts_adapter.send_or_update_status(
-                            source.chat_id,
-                            f"turn_stop.{_ts_reason}.{_uuid.uuid4().hex[:8]}",
-                            _ts_explanation,
-                        )
-                    except Exception:
-                        logger.debug(
-                            "turn_stop frame delivery failed for %s",
-                            source.chat_id, exc_info=True,
-                        )
+                    await _deliver_turn_stop_frame(
+                        _ts_adapter, source.chat_id, agent_result, _ts_explanation
+                    )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().

@@ -206,3 +206,45 @@ def test_inline_survives_when_platform_has_no_diagnostic_channel():
     flagged = CaptureSlackAdapter()
     flagged.delivers_diagnostic_status = True
     assert gateway_run._turn_stop_explanation_for_delivery(flagged, result) == _EXPLAINER
+
+
+def test_deliver_turn_stop_frame_key_and_nonce():
+    """Key carries the reason class (parenthetical suffix stripped) plus a
+    per-turn nonce so edit-in-place status caches post a fresh bubble."""
+    import re
+
+    calls = []
+
+    class _Diag:
+        async def send_or_update_status(self, chat_id, status_key, content, metadata=None):
+            calls.append(status_key)
+            return SendResult(success=True)
+
+    result = {"turn_exit_reason": "max_iterations_reached(10/10)"}
+    asyncio.run(gateway_run._deliver_turn_stop_frame(_Diag(), "chat-1", result, _EXPLAINER))
+    asyncio.run(gateway_run._deliver_turn_stop_frame(_Diag(), "chat-1", result, _EXPLAINER))
+    assert len(calls) == 2
+    assert all(
+        re.fullmatch(r"turn_stop\.max_iterations_reached\.[0-9a-f]{8}", k) for k in calls
+    )
+    assert calls[0] != calls[1]
+
+
+def test_deliver_turn_stop_frame_failures_never_propagate():
+    """A raising hook — or an adapter that declared the capability without
+    implementing the hook — loses only the diagnostic, never the turn."""
+
+    class _Boom:
+        async def send_or_update_status(self, *a, **k):
+            raise RuntimeError("adapter down")
+
+    class _NoHook:
+        pass
+
+    result = {"turn_exit_reason": "empty_response_exhausted"}
+    assert asyncio.run(
+        gateway_run._deliver_turn_stop_frame(_Boom(), "c", result, _EXPLAINER)
+    ) is None
+    assert asyncio.run(
+        gateway_run._deliver_turn_stop_frame(_NoHook(), "c", result, _EXPLAINER)
+    ) is None
