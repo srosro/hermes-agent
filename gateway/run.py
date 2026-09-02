@@ -31650,7 +31650,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None
             pending = None
-            if result and adapter and session_key:
+            if result and adapter and session_key and not _run_still_current():
+                # Superseded run: do not consume the pending slot — the
+                # session-command drain (_drain_pending_after_session_command)
+                # exclusively owns post-invalidation events, and a dequeue
+                # here would leave it nothing to retrieve.
+                logger.info(
+                    "Run superseded for session %s; leaving pending events for the session-command drain.",
+                    session_key or "?",
+                )
+            elif result and adapter and session_key:
                 pending_event = _dequeue_pending_event(adapter, session_key)
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
@@ -31802,30 +31811,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
-                    elif not _run_still_current():
-                        # Same currency gate as the delivery seam: a /stop,
-                        # /new, or replacement run superseded this result. No
-                        # first-response publish, and no queued recursion —
-                        # continuing would execute the canceled follow-up
-                        # under the obsolete generation. The outer stale
-                        # discard owns disposal.
-                        logger.info(
-                            "Queued follow-up for session %s: run superseded; dropping stale delivery and follow-up.",
-                            session_key or "?",
-                        )
-                        # No hand-back: /stop and /new invalidate the
-                        # generation AND discard the pending slot on purpose —
-                        # the session-command handoff exclusively owns
-                        # post-invalidation messages, and re-queueing here
-                        # could resurrect canceled work or clobber the new
-                        # session's first prompt. (The recursion-depth exit
-                        # above re-queues because its run is still current.)
-                        # Known narrow residual: non-command invalidations
-                        # (stale-agent / reaped-session eviction) also land
-                        # here and lose the follow-up — pre-existing lifecycle
-                        # edge, no worse than the pre-gate behavior of
-                        # executing it under a dead generation.
-                        return response if isinstance(response, dict) else result
                     elif first_response:
                         try:
                             if _already_streamed:
