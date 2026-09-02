@@ -31577,7 +31577,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # consumes one authoritative text. The caller must NOT
             # re-normalize: normalizing after the seam would resurrect a
             # stripped explainer as assistant warning prose.
-            if isinstance(response, dict):
+            # Hidden-reasoning retry exhaustion is exempt: the caller's
+            # blank-and-suppress machinery (#51628) keys on the sentinel
+            # still being in final_response — normalizing or stripping here
+            # would destroy that evidence. Those turns keep their pre-seam
+            # contract (suppressed, no frame).
+            if isinstance(response, dict) and not (
+                _is_gateway_hidden_reasoning_incomplete_turn(response)
+            ):
                 _fr0 = response.get("final_response") or ""
                 try:
                     from gateway.response_filters import (
