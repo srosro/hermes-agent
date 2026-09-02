@@ -31810,9 +31810,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # under the obsolete generation. The outer stale
                         # discard owns disposal.
                         logger.info(
-                            "Queued follow-up for session %s: run superseded; dropping stale delivery and follow-up.",
+                            "Queued follow-up for session %s: run superseded; re-queueing follow-up for the replacement run.",
                             session_key or "?",
                         )
+                        # Mirror the recursion-depth exit: the dequeued
+                        # follow-up belongs to the user, not to this stale
+                        # run — hand it back for the replacement run.
+                        if adapter and pending_event:
+                            merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                        elif adapter and hasattr(adapter, 'queue_message'):
+                            adapter.queue_message(session_key, pending)
                         return response if isinstance(response, dict) else result
                     elif first_response:
                         try:
