@@ -7110,7 +7110,15 @@ class TurnRunner:
                     and _fr != "(empty)"
                     and not result.get("turn_stop_explanation")
                 ):
-                    _final_for_stream = _fr
+                    # General sanitize only (no turn-stop arg — the seam owns
+                    # stripping): this payload edits a chat bubble, so secret
+                    # redaction, surrogate scrubbing (#55143/#55309), and
+                    # provider-error rewriting must still run here.
+                    _fr = _sanitize_gateway_final_response(
+                        ctx.source.platform, _fr
+                    )
+                    if _fr.strip():
+                        _final_for_stream = _fr
             if _final_for_stream is not None:
                 # Duck-type safe: test doubles / older consumers may expose a
                 # zero-arg finish(). The payload is an optimization, not a
@@ -32122,10 +32130,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            # final_response already carries the delivery
-                            # seam's authoritative text (written back after
-                            # _deliver_and_strip_turn_stop).
-                            content=response["final_response"],
+                            # Pre-seam call site (the delivery seam runs in
+                            # our caller after this returns): general
+                            # sanitize must still run here. No turn-stop
+                            # stripping — never-silent wins over the narrow
+                            # transformed+turn-stop residual, which the seam
+                            # notes in its contract.
+                            content=_sanitize_gateway_final_response(
+                                source.platform, response["final_response"]
+                            ),
                             finalize=True,
                         )
                         response["already_sent"] = True
