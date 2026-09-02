@@ -31960,6 +31960,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
+                # Last-responsible-moment rejection: every await since the
+                # queued-branch check (delivery, callbacks, message prep,
+                # cache refresh) is a supersession window, and this is the
+                # final gate before the recursion schedules model/tool work
+                # under the generation it carries.
+                if not _run_still_current():
+                    logger.info(
+                        "Queued follow-up for session %s: run superseded before recursion; dropping.",
+                        session_key or "?",
+                    )
+                    return response if isinstance(response, dict) else result
+
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
