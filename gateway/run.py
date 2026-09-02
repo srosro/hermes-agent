@@ -31964,11 +31964,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # queued-branch check (delivery, callbacks, message prep,
                 # cache refresh) is a supersession window, and this is the
                 # final gate before the recursion schedules model/tool work
-                # under the generation it carries. Non-interrupted path ONLY:
-                # an interrupted continuation's generation is expected stale
-                # (the interrupting message bumped it) and its recursion is
-                # what services that message.
-                if not was_interrupted and not _run_still_current():
+                # under the generation it carries. Unconditional on purpose:
+                # ordinary busy interruption queues and signals WITHOUT
+                # bumping the generation (only /stop and /new invalidate),
+                # so an interrupted continuation passes this check and is
+                # serviced — only reset-stale work is rejected.
+                if not _run_still_current():
                     logger.info(
                         "Queued follow-up for session %s: run superseded before recursion; dropping.",
                         session_key or "?",
