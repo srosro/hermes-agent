@@ -195,3 +195,34 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_finalized_result_skips_the_fallback_normalize(monkeypatch, tmp_path):
+    """A result the single delivery owner already finalized (normalized,
+    seam-processed, _delivery_finalized set) must pass through the caller
+    untouched — re-normalizing it would resurrect a stripped turn-stop
+    explainer as assistant warning prose. The empty-success warning above is
+    the un-finalized fallback; this pins the finalized complement."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "",
+        "_delivery_finalized": True,
+        "turn_stop_explanation": "⚠️ No reply: the model returned empty content after retries.",
+        "turn_exit_reason": "empty_response_exhausted",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": ""},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response == ""

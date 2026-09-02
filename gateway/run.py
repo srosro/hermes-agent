@@ -31584,7 +31584,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # re-normalize: normalizing after the seam would resurrect a
             # stripped explainer as assistant warning prose.
             if isinstance(response, dict):
-                response["_delivery_finalized"] = True
                 if _is_gateway_hidden_reasoning_incomplete_turn(response):
                     # Hidden-reasoning retry exhaustion (#51628): blank the
                     # sentinel HERE so no queued/reconciliation delivery can
@@ -31593,6 +31592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # partial/error metadata is untouched; no frame — these
                     # turns are suppressed outright, not diagnosed.
                     response["final_response"] = ""
+                    response["_delivery_finalized"] = True
                 else:
                     # Normalization preserves non-empty intentional-silence
                     # markers by construction (it only synthesizes on empty),
@@ -31607,6 +31607,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter, source.platform, source.chat_id, response, _fr0
                     )
                     response["final_response"] = _fr0
+                    # Flag only after the seam succeeded: a raising seam must
+                    # leave the caller's fallback normalize/sanitize armed.
+                    response["_delivery_finalized"] = True
 
             # Finalize the streaming-TTS consumer (#60671).
             #
