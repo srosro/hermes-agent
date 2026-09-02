@@ -31610,9 +31610,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         response.get("final_response") or "",
                         history_len=len(history),
                     )
-                    if run_generation is None or self._is_session_run_current(
-                        session_key, run_generation
-                    ):
+                    if _run_still_current():
                         _fr0 = await _deliver_and_strip_turn_stop(
                             adapter, source.platform, source.chat_id, response, _fr0
                         )
@@ -31804,16 +31802,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
-                    elif run_generation is not None and not self._is_session_run_current(
-                        session_key, run_generation
-                    ):
+                    elif not _run_still_current():
                         # Same currency gate as the delivery seam: a /stop,
-                        # /new, or replacement run superseded this result —
-                        # its first response must not be published either.
+                        # /new, or replacement run superseded this result. No
+                        # first-response publish, and no queued recursion —
+                        # continuing would execute the canceled follow-up
+                        # under the obsolete generation. The outer stale
+                        # discard owns disposal.
                         logger.info(
-                            "Queued follow-up for session %s: run superseded; skipping stale first-response delivery.",
+                            "Queued follow-up for session %s: run superseded; dropping stale delivery and follow-up.",
                             session_key or "?",
                         )
+                        return response if isinstance(response, dict) else result
                     elif first_response:
                         try:
                             if _already_streamed:
