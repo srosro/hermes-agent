@@ -31806,12 +31806,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _intentional_silence = is_intentional_silence_agent_result(
                         _delivery_result, first_response,
                     )
-                    if _intentional_silence:
-                        logger.info(
-                            "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                            session_key or "?",
-                        )
-                    elif not _run_still_current():
+                    if not _run_still_current():
                         # Mid-flight supersession: the slot was consumed while
                         # this run was still current, but a /stop, /new, or
                         # replacement landed during the awaits since. Per the
@@ -31822,6 +31817,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                         )
                         return response if isinstance(response, dict) else result
+                    elif _intentional_silence:
+                        logger.info(
+                            "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                            session_key or "?",
+                        )
                     elif first_response:
                         try:
                             if _already_streamed:
