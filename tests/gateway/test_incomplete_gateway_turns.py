@@ -241,3 +241,16 @@ def test_status_coro_delivers_turn_stop_to_diagnostic_channel():
     assert result.success
     assert calls and calls[0][1] == "turn_stop.empty_response_exhausted.abcd1234"
     assert adapter.sent == []
+
+
+def test_inline_survives_when_platform_has_no_diagnostic_channel():
+    """A platform whose adapter cannot receive turn_stop.* frames keeps the
+    inline explainer — stripping would leave that platform with no delivery
+    at all (never-silent, #34452)."""
+    hookless = CaptureSlackAdapter()
+    result = {"turn_stop_explanation": _EXPLAINER}
+    assert gateway_run._turn_stop_explanation_for_delivery(hookless, result) is None
+
+    flagged = CaptureSlackAdapter()
+    flagged.delivers_diagnostic_status = True
+    assert gateway_run._turn_stop_explanation_for_delivery(flagged, result) == _EXPLAINER

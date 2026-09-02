@@ -1089,6 +1089,19 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+def _turn_stop_explanation_for_delivery(adapter, result) -> Optional[str]:
+    """The explanation to strip from this platform's chat prose.
+
+    Only when the adapter declares a non-conversational diagnostic channel
+    (``delivers_diagnostic_status``) does the ``turn_stop.*`` frame reach it —
+    stripping inline is safe. Everywhere else, inline is the platform's only
+    delivery, so it must survive: an abnormal end is never silent (#34452).
+    """
+    if getattr(adapter, "delivers_diagnostic_status", False):
+        return (result or {}).get("turn_stop_explanation")
+    return None
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
@@ -7062,7 +7075,11 @@ class TurnRunner:
                     # send path (a raw payload here would re-adopt the
                     # turn-stop explainer the sanitizer strips).
                     _fr = _sanitize_gateway_final_response(
-                        ctx.source.platform, _fr, result.get("turn_stop_explanation")
+                        ctx.source.platform,
+                        _fr,
+                        _turn_stop_explanation_for_delivery(
+                            self._runner._adapter_for_source(ctx.source), result
+                        ),
                     )
                     if _fr.strip():
                         _final_for_stream = _fr
@@ -7203,7 +7220,11 @@ class TurnRunner:
                 result, final_response or "", history_len=len(agent_history),
             )
             final_response = _sanitize_gateway_final_response(
-                ctx.source.platform, final_response, result.get("turn_stop_explanation")
+                ctx.source.platform,
+                final_response,
+                _turn_stop_explanation_for_delivery(
+                    self._runner._adapter_for_source(ctx.source), result
+                ),
             )
             if not final_response:
                 final_response = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -22379,7 +22400,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(
-                    source.platform, response, agent_result.get("turn_stop_explanation")
+                    source.platform,
+                    response,
+                    _turn_stop_explanation_for_delivery(
+                        self._adapter_for_source(source), agent_result
+                    ),
                 )
 
             # Ordering contract: the agent thread already updated the contextvar
