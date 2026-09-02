@@ -1121,6 +1121,13 @@ async def _deliver_and_strip_turn_stop(adapter, platform, chat_id, result, text)
     unconfirmed delivery keeps the inline copy, so an abnormal end is never
     silent (#34452).
     """
+    if (result or {}).get("already_sent"):
+        # A pre-seam reconciliation (the transformed edit_message) already
+        # delivered the full text — inline explainer included — as the edited
+        # bubble. Posting a frame too would show the diagnostic twice, and
+        # stripping here would desync the outer text from what was sent;
+        # general sanitize still applies.
+        return _sanitize_gateway_final_response(platform, text)
     explanation = _turn_stop_explanation_for_delivery(adapter, result)
     delivered = False
     if explanation:

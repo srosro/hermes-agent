@@ -281,3 +281,30 @@ def test_deliver_and_strip_contract(explanation, delivery_ok, text, expected):
         )
     )
     assert out == expected
+
+
+def test_deliver_and_strip_skips_frame_when_already_sent():
+    """A pre-seam reconciliation that already delivered the full text (the
+    transformed edit_message sets already_sent) gets no frame and no strip —
+    the diagnostic must not show twice."""
+
+    calls = []
+
+    class _Diag:
+        delivers_diagnostic_status = True
+
+        async def send_or_update_status(self, chat_id, status_key, content, metadata=None):
+            calls.append(status_key)
+            return SendResult(success=True)
+
+    result = {
+        "turn_exit_reason": "empty_response_exhausted",
+        "turn_stop_explanation": _EXPLAINER,
+        "already_sent": True,
+    }
+    out = asyncio.run(
+        gateway_run._deliver_and_strip_turn_stop(
+            _Diag(), Platform.SLACK, "chat-1", result, _EXPLAINER
+        )
+    )
+    assert out == _EXPLAINER and calls == []
