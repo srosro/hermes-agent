@@ -345,6 +345,8 @@ class TestBridgeDispatch:
         })
         # Will fail classification because unknown_xxx isn't deferrable.
         assert err is not None
+        # ...and NOT because the bare envelope was mistaken for stray keys.
+        assert "alongside" not in err
 
 
     def test_resolve_underlying_call_rejects_recursion(self):
@@ -381,17 +383,6 @@ class TestBridgeDispatch:
         assert "cwd" in err
         assert "read_paths" in err
         assert "arguments" in err
-
-    def test_resolve_underlying_call_allows_the_bare_envelope(self):
-        """The two envelope keys alone are not mistaken for stray arguments."""
-        from tools.tool_search import resolve_underlying_call
-        _, _, err = resolve_underlying_call({
-            "name": "unknown_xxx",
-            "arguments": {"foo": "bar"},
-        })
-        # Still an error (unknown_xxx is not deferrable), but not the new one.
-        assert err is not None
-        assert "alongside" not in err
 
 
 # ---------------------------------------------------------------------------
