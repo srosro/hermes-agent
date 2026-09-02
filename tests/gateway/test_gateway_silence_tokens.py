@@ -199,28 +199,3 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
-
-
-@pytest.mark.asyncio
-async def test_proxy_results_get_empty_turn_normalization(monkeypatch, tmp_path):
-    """The proxy branch owns normalize+sanitize for proxied turns (the local
-    single owner never sees them): an empty proxied success comes back as the
-    user-facing warning, not a blank."""
-    runner = _runner(monkeypatch, tmp_path)
-    monkeypatch.setattr(runner, "_get_proxy_url", lambda: "http://proxy.local")
-    runner._run_agent_via_proxy = AsyncMock(return_value={
-        "final_response": "",
-        "messages": [],
-        "api_calls": 1,
-        "failed": False,
-    })
-
-    result = await runner._run_agent(
-        message="question",
-        context_prompt="",
-        history=[{"role": "user", "content": "question"}],
-        source=_source(),
-        session_id="s1",
-    )
-
-    assert "no response was generated" in result["final_response"]

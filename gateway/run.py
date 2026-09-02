@@ -30130,7 +30130,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         return {
-            "final_response": full_response or "(No response from remote agent)",
+            # Raw text; the proxy owner's normalize in _run_agent exclusively
+            # handles the empty case (a placeholder here would pre-empt it).
+            "final_response": full_response,
             "messages": [
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": full_response},
@@ -31608,9 +31610,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         response.get("final_response") or "",
                         history_len=len(history),
                     )
-                    _fr0 = await _deliver_and_strip_turn_stop(
-                        adapter, source.platform, source.chat_id, response, _fr0
-                    )
+                    if run_generation is None or self._is_session_run_current(
+                        session_key, run_generation
+                    ):
+                        _fr0 = await _deliver_and_strip_turn_stop(
+                            adapter, source.platform, source.chat_id, response, _fr0
+                        )
+                    # else: a /stop, /new, or replacement run superseded this
+                    # result — no frame; the stale inline text rides to the
+                    # caller's existing generation discard untouched.
                     response["final_response"] = _fr0
 
             # Finalize the streaming-TTS consumer (#60671).
