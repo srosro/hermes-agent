@@ -7230,18 +7230,19 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
+            # No turn-stop strip here: this dict flows to the main delivery
+            # seam, which delivers the frame first and strips only on
+            # confirmed delivery. Stripping optimistically here could leave
+            # the turn silent if that delivery later fails.
             final_response = _sanitize_gateway_final_response(
-                ctx.source.platform,
-                final_response,
-                _turn_stop_explanation_for_delivery(
-                    self._runner._adapter_for_source(ctx.source), result
-                ),
+                ctx.source.platform, final_response
             )
             if not final_response:
                 final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             return {
                 "final_response": final_response,
                 "turn_stop_explanation": result.get("turn_stop_explanation"),
+                "turn_exit_reason": result.get("turn_exit_reason"),
                 "messages": result.get("messages", []),
                 "api_calls": result.get("api_calls", 0),
                 "failed": result.get("failed", False),
@@ -7319,6 +7320,7 @@ class TurnRunner:
         return {
             "final_response": final_response,
             "turn_stop_explanation": result.get("turn_stop_explanation"),
+            "turn_exit_reason": result.get("turn_exit_reason"),
             "last_reasoning": result.get("last_reasoning"),
             "messages": ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else [],
             "api_calls": ctx.result_holder[0].get("api_calls", 0) if ctx.result_holder[0] else 0,
@@ -22416,13 +22418,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _ts_explanation = _turn_stop_explanation_for_delivery(
                     _ts_adapter, agent_result
                 )
-                response = _sanitize_gateway_final_response(
-                    source.platform, response, _ts_explanation
-                )
+                _ts_delivered = False
                 if _ts_explanation:
-                    await _deliver_turn_stop_frame(
+                    # Deliver first: the inline copy is stripped only once the
+                    # frame is confirmed on the diagnostic channel; a failed
+                    # or unconfirmed delivery keeps inline — never silent.
+                    _ts_res = await _deliver_turn_stop_frame(
                         _ts_adapter, source.chat_id, agent_result, _ts_explanation
                     )
+                    _ts_delivered = bool(getattr(_ts_res, "success", False))
+                response = _sanitize_gateway_final_response(
+                    source.platform,
+                    response,
+                    _ts_explanation if _ts_delivered else None,
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -24688,6 +24697,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+
+            # Same turn-stop seam as the main path: deliver the diagnostic on
+            # the adapter's channel first, and strip the inline copy only on
+            # confirmed delivery (a failed frame keeps inline — never silent).
+            if result:
+                _bg_ts = _turn_stop_explanation_for_delivery(adapter, result)
+                if _bg_ts:
+                    _bg_res = await _deliver_turn_stop_frame(
+                        adapter, source.chat_id, result, _bg_ts
+                    )
+                    if getattr(_bg_res, "success", False):
+                        response = _sanitize_gateway_final_response(
+                            source.platform, response, _bg_ts
+                        )
 
             # Background tasks start a fresh conversation (no prior history),
             # so history_offset=0: every message in the run belongs to this
