@@ -1121,13 +1121,6 @@ async def _deliver_and_strip_turn_stop(adapter, platform, chat_id, result, text)
     unconfirmed delivery keeps the inline copy, so an abnormal end is never
     silent (#34452).
     """
-    if (result or {}).get("already_sent"):
-        # Any pre-seam delivery that already sent the full text — inline
-        # explainer included (already_sent has three producers in
-        # _run_agent_inner: already-streamed, stale-finalize edit, transformed
-        # edit) — makes a frame a double-show, and stripping here would desync
-        # the outer text from what was sent; general sanitize still applies.
-        return _sanitize_gateway_final_response(platform, text)
     explanation = _turn_stop_explanation_for_delivery(adapter, result)
     delivered = False
     if explanation:
@@ -22446,17 +22439,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = await _deliver_and_strip_turn_stop(
-                    self._adapter_for_source(source),
-                    source.platform,
-                    source.chat_id,
-                    agent_result,
-                    response,
+                # The delivery seam already ran inside _run_agent_inner,
+                # before reconciliation; only the general sanitize applies to
+                # any text normalization synthesized above.
+                response = _sanitize_gateway_final_response(
+                    source.platform, response
                 )
-                # Downstream reconciliation (stale-stream check, transformed
-                # edit_message) reads final_response from the result record —
-                # hand it the seam's authoritative text.
-                agent_result["final_response"] = response
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -32020,6 +32008,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # tool call, setting already_sent=True, but that text is NOT the
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
+        # The turn-stop delivery seam runs FIRST — before queued/stream
+        # reconciliation — so every downstream compare, edit, and send
+        # consumes its authoritative text: frame posted on the diagnostic
+        # channel, inline stripped only on confirmed delivery, general
+        # sanitize always.
+        if isinstance(response, dict):
+            response["final_response"] = await _deliver_and_strip_turn_stop(
+                self._adapter_for_source(source),
+                source.platform,
+                source.chat_id,
+                response,
+                response.get("final_response") or "",
+            )
+
         _sc = stream_consumer_holder[0]
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
@@ -32134,25 +32136,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
+                        _transform_res = await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            # Pre-seam call site (the delivery seam runs in
-                            # our caller after this returns): general
-                            # sanitize must still run here. No turn-stop
-                            # stripping — never-silent wins over the narrow
-                            # transformed+turn-stop residual, which the seam
-                            # notes in its contract.
-                            content=_sanitize_gateway_final_response(
-                                source.platform, response["final_response"]
-                            ),
+                            # The seam above already produced the
+                            # authoritative (sanitized, stripped-on-delivery)
+                            # text.
+                            content=response["final_response"],
                             finalize=True,
                         )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
+                        if getattr(_transform_res, "success", True):
+                            response["already_sent"] = True
+                            logger.info(
+                                "Edited streamed message %s for session %s to include plugin-transformed content.",
+                                _sc_msg_id, session_key or "?",
+                            )
+                        else:
+                            logger.warning(
+                                "Transformed-edit failed for session %s (%s); sending via normal final send.",
+                                session_key or "?",
+                                getattr(_transform_res, "error", None),
+                            )
                     except Exception as _edit_err:
                         logger.warning(
                             "Failed to edit streamed message for session %s: %s",
