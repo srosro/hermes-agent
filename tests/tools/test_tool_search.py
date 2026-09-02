@@ -358,6 +358,42 @@ class TestBridgeDispatch:
         assert "bridge tool" in err.lower()
 
 
+    def test_resolve_underlying_call_refuses_spread_tool_arguments(self):
+        """Arguments spread beside 'arguments' are refused, not dropped.
+
+        A model that emits some of the tool's own parameters as siblings of
+        'arguments' used to have them silently discarded, so the underlying
+        tool ran with an incomplete payload. When the lost parameters were
+        optional, nothing downstream could tell — the call simply did the
+        wrong thing.
+        """
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({
+            "name": "some_mcp_tool",
+            "arguments": {"argv": ["/usr/bin/sqlite3", "chat.db", "select 1;"]},
+            "cwd": "~/Library/Messages",
+            "read_paths": ["~/Library/Messages"],
+        })
+        assert name is None
+        assert args == {}
+        assert err is not None
+        # The message has to name the keys, or the model cannot act on it.
+        assert "cwd" in err
+        assert "read_paths" in err
+        assert "arguments" in err
+
+    def test_resolve_underlying_call_allows_the_bare_envelope(self):
+        """The two envelope keys alone are not mistaken for stray arguments."""
+        from tools.tool_search import resolve_underlying_call
+        _, _, err = resolve_underlying_call({
+            "name": "unknown_xxx",
+            "arguments": {"foo": "bar"},
+        })
+        # Still an error (unknown_xxx is not deferrable), but not the new one.
+        assert err is not None
+        assert "alongside" not in err
+
+
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).
 # ---------------------------------------------------------------------------
