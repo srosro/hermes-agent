@@ -31820,6 +31820,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # could resurrect canceled work or clobber the new
                         # session's first prompt. (The recursion-depth exit
                         # above re-queues because its run is still current.)
+                        # Known narrow residual: non-command invalidations
+                        # (stale-agent / reaped-session eviction) also land
+                        # here and lose the follow-up — pre-existing lifecycle
+                        # edge, no worse than the pre-gate behavior of
+                        # executing it under a dead generation.
                         return response if isinstance(response, dict) else result
                     elif first_response:
                         try:
