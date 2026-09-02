@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -552,6 +551,33 @@ def finalize_turn(
     # the agent stopped (#34452).  Surface a single user-visible
     # explanation derived from ``_turn_exit_reason``, mirroring the
     # file-mutation verifier footer pattern above.
+
+    _response_transformed = False
+    _pre_transform_response = None
+
+    # Plugin hook: transform_llm_output
+    # Fired once per turn after the tool-calling loop completes.
+    # Plugins can transform the LLM's output text before it's returned.
+    # First hook to return a string wins; None/empty return leaves text unchanged.
+    if final_response and not interrupted:
+        try:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _transform_results = _invoke_hook(
+                "transform_llm_output",
+                response_text=final_response,
+                session_id=agent.session_id or "",
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+            for _hook_result in _transform_results:
+                if isinstance(_hook_result, str) and _hook_result:
+                    _pre_transform_response = final_response
+                    final_response = _hook_result
+                    _response_transformed = True
+                    break  # First non-empty string wins
+        except Exception as exc:
+            logger.warning("transform_llm_output hook failed: %s", exc)
+
     #
     # Gate carefully so healthy turns stay quiet:
     #   - ``text_response(...)`` exits never produce an explanation
@@ -589,71 +615,26 @@ def finalize_turn(
                         getattr(agent, "_last_persistence_error_cause", None),
                     )
                     if _explanation:
-                        # Producer only: the explanation always lands inline
-                        # (replacing the "(empty)" sentinel, or riding behind
-                        # a partial fragment), and — when a status channel is
-                        # wired — is ALSO emitted as a ``turn_stop.*`` frame.
-                        # Routing is the delivery layer's job: the result's
-                        # ``turn_stop_explanation`` field carries the exact
-                        # value so the messaging gateway removes it — by
-                        # value, never by wording — for chat surfaces (an
-                        # inline ⚠️ warning in a group chat reads as the
-                        # agent talking and cascades agent-to-agent,
-                        # plow-pbc/agent-mgr#107); raw-text surfaces
-                        # (CLI/TUI/API) keep the inline text — #34452's
-                        # "never silent" holds everywhere with no
-                        # per-surface branching here.
+                        # Producer only, one representation: the explanation
+                        # always lands inline (replacing the "(empty)"
+                        # sentinel, or riding behind a partial fragment) and
+                        # its exact text is reported in the result's
+                        # ``turn_stop_explanation``. The messaging gateway is
+                        # the sole delivery seam: it removes precisely that
+                        # value for chat surfaces whose adapter declares a
+                        # non-conversational diagnostic channel and posts it
+                        # there instead (an inline ⚠️ warning in a group chat
+                        # reads as the agent talking and cascades
+                        # agent-to-agent, plow-pbc/agent-mgr#107); every
+                        # other surface keeps the inline text — #34452's
+                        # "never silent" holds everywhere.
                         _turn_stop_explanation = _explanation
-                        # Event key: ``turn_stop.<reason>.<nonce>`` — the
-                        # parenthetical suffix is stripped so adapters route
-                        # on the class; the nonce makes edit-in-place
-                        # adapters post a fresh bubble per turn instead of
-                        # silently editing the previous same-reason one.
-                        _status_cb = getattr(agent, "status_callback", None)
-                        if _status_cb:
-                            _reason_key = str(_turn_exit_reason).split("(", 1)[0]
-                            try:
-                                _status_cb(
-                                    f"turn_stop.{_reason_key}.{uuid.uuid4().hex[:8]}",
-                                    _explanation,
-                                )
-                            except Exception:
-                                logger.debug(
-                                    "status_callback error for turn_stop explainer",
-                                    exc_info=True,
-                                )
                         if _is_empty_terminal:
                             final_response = _explanation
                         else:
                             final_response = _stripped + "\n\n" + _explanation
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
-
-    _response_transformed = False
-    _pre_transform_response = None
-
-    # Plugin hook: transform_llm_output
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
-                "transform_llm_output",
-                response_text=final_response,
-                session_id=agent.session_id or "",
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-            for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    _pre_transform_response = final_response
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
-        except Exception as exc:
-            logger.warning("transform_llm_output hook failed: %s", exc)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

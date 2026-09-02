@@ -195,54 +195,6 @@ def test_sanitize_without_explanation_leaves_text_alone():
     )
 
 
-def test_status_coro_drops_turn_stop_without_diagnostic_channel():
-    """Hookless adapters AND conversational status hooks (which post ordinary
-    chat messages) both drop the frame; only a declared diagnostic channel
-    receives it."""
-    hookless = CaptureSlackAdapter()
-    result = asyncio.run(
-        gateway_run._send_or_update_status_coro(
-            hookless, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _EXPLAINER, None
-        )
-    )
-    assert result is None and hookless.sent == []
-
-    conversational = CaptureSlackAdapter()
-    hook_calls = []
-
-    async def hook(chat_id, status_key, content, metadata=None):
-        hook_calls.append(status_key)
-        return SendResult(success=True)
-
-    conversational.send_or_update_status = hook  # no delivers_diagnostic_status
-    result = asyncio.run(
-        gateway_run._send_or_update_status_coro(
-            conversational, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _EXPLAINER, None
-        )
-    )
-    assert result is None and hook_calls == [] and conversational.sent == []
-
-
-def test_status_coro_delivers_turn_stop_to_diagnostic_channel():
-    adapter = CaptureSlackAdapter()
-    calls = []
-
-    async def hook(chat_id, status_key, content, metadata=None):
-        calls.append((chat_id, status_key, content))
-        return SendResult(success=True)
-
-    adapter.send_or_update_status = hook
-    adapter.delivers_diagnostic_status = True
-    result = asyncio.run(
-        gateway_run._send_or_update_status_coro(
-            adapter, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _EXPLAINER, None
-        )
-    )
-    assert result.success
-    assert calls and calls[0][1] == "turn_stop.empty_response_exhausted.abcd1234"
-    assert adapter.sent == []
-
-
 def test_inline_survives_when_platform_has_no_diagnostic_channel():
     """A platform whose adapter cannot receive turn_stop.* frames keeps the
     inline explainer — stripping would leave that platform with no delivery

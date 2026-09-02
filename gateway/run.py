@@ -1109,18 +1109,6 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
-    if str(status_key).startswith("turn_stop."):
-        # A turn-stop explainer is a diagnostic frame, not conversation. Most
-        # status hooks (Telegram/Slack) deliver by posting ordinary chat
-        # messages — the exact inline warning the sanitize boundary just
-        # stripped — so the frame goes only to adapters that declare a
-        # non-conversational diagnostic channel; everyone else drops it.
-        if getattr(adapter, "delivers_diagnostic_status", False):
-            sender = getattr(adapter, "send_or_update_status", None)
-            if callable(sender):
-                return await sender(chat_id, status_key, content, metadata=metadata)
-        logger.debug("dropping turn_stop status for %s (no diagnostic channel)", chat_id)
-        return None
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
@@ -7230,6 +7218,7 @@ class TurnRunner:
                 final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             return {
                 "final_response": final_response,
+                "turn_stop_explanation": result.get("turn_stop_explanation"),
                 "messages": result.get("messages", []),
                 "api_calls": result.get("api_calls", 0),
                 "failed": result.get("failed", False),
@@ -7306,6 +7295,7 @@ class TurnRunner:
 
         return {
             "final_response": final_response,
+            "turn_stop_explanation": result.get("turn_stop_explanation"),
             "last_reasoning": result.get("last_reasoning"),
             "messages": ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else [],
             "api_calls": ctx.result_holder[0].get("api_calls", 0) if ctx.result_holder[0] else 0,
@@ -22399,13 +22389,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = _sanitize_gateway_final_response(
-                    source.platform,
-                    response,
-                    _turn_stop_explanation_for_delivery(
-                        self._adapter_for_source(source), agent_result
-                    ),
+                _ts_adapter = self._adapter_for_source(source)
+                _ts_explanation = _turn_stop_explanation_for_delivery(
+                    _ts_adapter, agent_result
                 )
+                response = _sanitize_gateway_final_response(
+                    source.platform, response, _ts_explanation
+                )
+                if _ts_explanation:
+                    # The single delivery seam for the turn-stop diagnostic:
+                    # the inline copy was just stripped, so post the frame on
+                    # the adapter's non-conversational channel. Key carries
+                    # the reason class plus a per-turn nonce so edit-in-place
+                    # status caches post a fresh bubble per turn. Best-effort:
+                    # a delivery failure only loses a diagnostic.
+                    try:
+                        import uuid as _uuid
+
+                        _ts_reason = str(
+                            agent_result.get("turn_exit_reason") or "unknown"
+                        ).split("(", 1)[0]
+                        await _ts_adapter.send_or_update_status(
+                            source.chat_id,
+                            f"turn_stop.{_ts_reason}.{_uuid.uuid4().hex[:8]}",
+                            _ts_explanation,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "turn_stop frame delivery failed for %s",
+                            source.chat_id, exc_info=True,
+                        )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -32079,7 +32092,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            content=response["final_response"],
+                            # Same platform-sanitized value as every chat
+                            # egress: a raw payload here would re-adopt the
+                            # turn-stop explainer the sanitizer strips.
+                            content=_sanitize_gateway_final_response(
+                                source.platform,
+                                response["final_response"],
+                                _turn_stop_explanation_for_delivery(
+                                    _sc.adapter, response
+                                ),
+                            ),
                             finalize=True,
                         )
                         response["already_sent"] = True

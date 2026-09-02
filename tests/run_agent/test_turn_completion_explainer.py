@@ -437,13 +437,10 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
 
 # --------------------------------------------------------------------------
 # 4. Gateway surfaces: the explanation rides the status channel, not
-#    final_response.  ``agent.status_callback`` is wired only by the
-#    messaging gateway (gateway/run.py), so its presence is the surface
-#    discriminator: with it set, the explainer must emit one
-#    ``turn_stop.<reason>`` status frame and leave final_response free of
-#    diagnostic text — adapters decide whether to deliver or drop the frame.
-#    CLI/TUI (no status_callback) keep the inline substitution, which the
-#    section-3 tests above pin.
+#    final_response. The producer has ONE representation: the inline text
+#    plus its exact copy in result["turn_stop_explanation"]. The gateway is
+#    the sole delivery seam (strip-by-value + diagnostic-channel frame),
+#    pinned by tests/gateway/test_incomplete_gateway_turns.py.
 # --------------------------------------------------------------------------
 def _attach_status_recorder(agent) -> list:
     events = []
@@ -453,7 +450,7 @@ def _attach_status_recorder(agent) -> list:
     return events
 
 
-def test_gateway_empty_exhausted_emits_turn_stop_status_and_keeps_inline():
+def test_empty_exhausted_reports_field_and_keeps_inline():
     """An exhausted-empty turn emits exactly one ``turn_stop.*`` status frame
     carrying the explanation AND keeps it inline (the delivery boundary, not
     the producer, decides which surfaces see the prose)."""
@@ -471,19 +468,14 @@ def test_gateway_empty_exhausted_emits_turn_stop_status_and_keeps_inline():
         result = agent.run_conversation("do something")
 
     assert result["turn_exit_reason"] == "empty_response_exhausted"
-    turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
-    assert len(turn_stops) == 1
-    event_type, message = turn_stops[0]
-    assert re.fullmatch(r"turn_stop\.empty_response_exhausted\.[0-9a-f]{8}", event_type)
-    assert "No reply:" in message
-    # Producer keeps the inline explanation on every surface; the messaging
-    # gateway's sanitize boundary removes exactly this value for chat
-    # platforms, so the result reports it.
+    # One representation: inline text everywhere, exact copy in the field for
+    # the gateway's delivery seam. No status frames from the producer.
     assert "No reply:" in result["final_response"]
     assert result["turn_stop_explanation"] == result["final_response"]
+    assert [e for e in events if e[0].startswith("turn_stop.")] == []
 
 
-def test_gateway_partial_fragment_keeps_fragment_and_appends_reason():
+def test_partial_fragment_keeps_fragment_and_appends_reason():
     """Partial-stream recovery: the recovered fragment keeps its text with the
     explanation appended inline, and the explanation also rides the status
     channel; result reports the exact explanation for the delivery boundary."""
@@ -509,102 +501,8 @@ def test_gateway_partial_fragment_keeps_fragment_and_appends_reason():
 
     assert result["turn_exit_reason"] == "partial_stream_recovery"
     assert result["final_response"].startswith(recovered)
-    # Explainer rides behind the fragment on every surface; the messaging
-    # gateway's sanitize boundary sheds it for chat platforms.
+    # Explainer rides behind the fragment; the field reports its exact text so
+    # the gateway can shed precisely that suffix for chat platforms.
     assert "No reply:" in result["final_response"]
-    turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
-    assert len(turn_stops) == 1
-    event_type, message = turn_stops[0]
-    assert re.fullmatch(r"turn_stop\.partial_stream_recovery\.[0-9a-f]{8}", event_type)
-    assert "No reply:" in message
-
-
-def test_gateway_status_event_key_strips_parenthetical_suffix():
-    """Parameterized exit reasons like ``max_iterations_reached(10/10)``
-    must produce a stable event key without the per-turn suffix, so adapter
-    routing rules can match on it."""
-    agent = _make_agent(max_iterations=10)
-    events = _attach_status_recorder(agent)
-    # Empty final response + a parameterized budget-exhaustion exit: drive
-    # the finalizer directly, faking the loop's exit state.
-    from agent.turn_finalizer import finalize_turn
-
-    with (
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-        patch.object(agent, "_handle_max_iterations", return_value=""),
-    ):
-        result = finalize_turn(
-            agent,
-            final_response="",
-            api_call_count=10,
-            interrupted=False,
-            failed=False,
-            messages=[{"role": "user", "content": "hi"}],
-            conversation_history=[],
-            effective_task_id=None,
-            turn_id=str(uuid.uuid4()),
-            user_message="hi",
-            original_user_message="hi",
-            _should_review_memory=False,
-            _turn_exit_reason="max_iterations_reached(10/10)",
-        )
-
-    assert "No reply:" in result["final_response"]
-    turn_stops = [e for e in events if e[0].startswith("turn_stop.")]
-    assert len(turn_stops) == 1
-    event_type, message = turn_stops[0]
-    assert re.fullmatch(r"turn_stop\.max_iterations_reached\.[0-9a-f]{8}", event_type)
-    assert "No reply:" in message
-
-
-def test_gateway_same_reason_turns_get_distinct_status_keys():
-    """Adapters with edit-in-place send_or_update_status semantics key their
-    message cache on the status key; two same-reason turns must therefore
-    carry distinct keys so the second explainer posts a fresh bubble instead
-    of silently editing the first."""
-    agent = _make_agent(max_iterations=10)
-    events = _attach_status_recorder(agent)
-    agent.client.chat.completions.create.side_effect = [
-        _mock_response(content="", finish_reason="stop") for _ in range(16)
-    ]
-
-    with (
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        agent.run_conversation("do something")
-        agent.run_conversation("do something else")
-
-    keys = [e[0] for e in events if e[0].startswith("turn_stop.")]
-    assert len(keys) == 2
-    assert all(
-        re.fullmatch(r"turn_stop\.empty_response_exhausted\.[0-9a-f]{8}", k)
-        for k in keys
-    )
-    assert keys[0] != keys[1]
-
-
-def test_gateway_status_callback_failure_never_loses_inline_explanation():
-    """A raising status_callback must not produce a silent abnormal end:
-    the explainer falls back to the inline final_response substitution
-    (#34452's guarantee) instead of clearing it."""
-    agent = _make_agent(max_iterations=10)
-    def _boom(event_type, message):
-        raise RuntimeError("adapter down")
-    agent.status_callback = _boom
-    agent.client.chat.completions.create.side_effect = [
-        _mock_response(content="", finish_reason="stop") for _ in range(8)
-    ]
-
-    with (
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        result = agent.run_conversation("do something")
-
-    assert result["turn_exit_reason"] == "empty_response_exhausted"
-    assert "No reply:" in result["final_response"]
+    assert result["final_response"].endswith("\n\n" + result["turn_stop_explanation"])
+    assert [e for e in events if e[0].startswith("turn_stop.")] == []
