@@ -31811,6 +31811,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
+                    elif not _run_still_current():
+                        # Mid-flight supersession: the slot was consumed while
+                        # this run was still current, but a /stop, /new, or
+                        # replacement landed during the awaits since. Per the
+                        # handoff contract, drop — no publish, no recursion
+                        # under the obsolete generation.
+                        logger.info(
+                            "Queued follow-up for session %s: run superseded mid-flight; dropping stale delivery and follow-up.",
+                            session_key or "?",
+                        )
+                        return response if isinstance(response, dict) else result
                     elif first_response:
                         try:
                             if _already_streamed:
