@@ -157,46 +157,73 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
 
 # --------------------------------------------------------------------------
 # Turn-stop explainer delivery boundary (plow-pbc/agent-mgr#107)
-# The finalizer keeps the explainer inline on every surface and emits a
-# turn_stop.* status frame; these pin the gateway's consumer side — chat
-# surfaces shed the prose (adapters gate the frame), raw surfaces keep it.
+# The finalizer keeps the explainer inline on every surface, reports its exact
+# text in result["turn_stop_explanation"], and emits a turn_stop.* status
+# frame; these pin the gateway's consumer side — chat surfaces shed exactly
+# that value (adapters with a diagnostic channel get the frame), raw surfaces
+# keep the inline text, and quoted diagnostics in genuine answers survive.
 # --------------------------------------------------------------------------
-def _explainer() -> str:
-    from run_agent import TURN_STOP_EXPLAINER_PREFIX
-
-    return TURN_STOP_EXPLAINER_PREFIX + "the model returned empty content after retries."
+_EXPLAINER = "⚠️ No reply: the model returned empty content after retries."
+_RAW_PLATFORM = next(iter(gateway_run._GATEWAY_RAW_TEXT_PLATFORMS))
 
 
-def test_sanitize_strips_turn_stop_explainer_for_chat_surfaces():
-    assert gateway_run._sanitize_gateway_final_response(Platform.SLACK, _explainer()) == ""
-
-
-def test_sanitize_keeps_fragment_and_sheds_appended_explainer():
-    fragment = "I inspected the running gateway and found the stream timed out."
-    out = gateway_run._sanitize_gateway_final_response(
-        Platform.SLACK, fragment + "\n\n" + _explainer()
+@pytest.mark.parametrize(
+    ("platform", "text", "expected"),
+    [
+        (Platform.SLACK, _EXPLAINER, ""),
+        (Platform.SLACK, "fragment recovered." + "\n\n" + _EXPLAINER, "fragment recovered."),
+        (_RAW_PLATFORM, _EXPLAINER, _EXPLAINER),
+        # A genuine answer that merely quotes the diagnostic is not the
+        # diagnostic: removal is by exact value, not wording.
+        (Platform.SLACK, "The warning you saw means: " + _EXPLAINER, "The warning you saw means: " + _EXPLAINER),
+    ],
+    ids=["chat-strips", "chat-sheds-suffix", "raw-passthrough", "quoted-survives"],
+)
+def test_sanitize_turn_stop_explainer(platform, text, expected):
+    assert (
+        gateway_run._sanitize_gateway_final_response(
+            platform, text, turn_stop_explanation=_EXPLAINER
+        )
+        == expected
     )
-    assert out == fragment
 
 
-def test_sanitize_passes_turn_stop_explainer_for_raw_surfaces():
-    raw = next(iter(gateway_run._GATEWAY_RAW_TEXT_PLATFORMS))
-    assert gateway_run._sanitize_gateway_final_response(raw, _explainer()) == _explainer()
+def test_sanitize_without_explanation_leaves_text_alone():
+    assert (
+        gateway_run._sanitize_gateway_final_response(Platform.SLACK, _EXPLAINER)
+        == _EXPLAINER
+    )
 
 
-def test_status_coro_drops_turn_stop_for_hookless_adapter():
-    adapter = CaptureSlackAdapter()  # no send_or_update_status hook
-
+def test_status_coro_drops_turn_stop_without_diagnostic_channel():
+    """Hookless adapters AND conversational status hooks (which post ordinary
+    chat messages) both drop the frame; only a declared diagnostic channel
+    receives it."""
+    hookless = CaptureSlackAdapter()
     result = asyncio.run(
         gateway_run._send_or_update_status_coro(
-            adapter, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _explainer(), None
+            hookless, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _EXPLAINER, None
         )
     )
-    assert result is None
-    assert adapter.sent == []
+    assert result is None and hookless.sent == []
+
+    conversational = CaptureSlackAdapter()
+    hook_calls = []
+
+    async def hook(chat_id, status_key, content, metadata=None):
+        hook_calls.append(status_key)
+        return SendResult(success=True)
+
+    conversational.send_or_update_status = hook  # no delivers_diagnostic_status
+    result = asyncio.run(
+        gateway_run._send_or_update_status_coro(
+            conversational, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _EXPLAINER, None
+        )
+    )
+    assert result is None and hook_calls == [] and conversational.sent == []
 
 
-def test_status_coro_delivers_turn_stop_to_hooked_adapter():
+def test_status_coro_delivers_turn_stop_to_diagnostic_channel():
     adapter = CaptureSlackAdapter()
     calls = []
 
@@ -205,9 +232,10 @@ def test_status_coro_delivers_turn_stop_to_hooked_adapter():
         return SendResult(success=True)
 
     adapter.send_or_update_status = hook
+    adapter.delivers_diagnostic_status = True
     result = asyncio.run(
         gateway_run._send_or_update_status_coro(
-            adapter, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _explainer(), None
+            adapter, "chat-1", "turn_stop.empty_response_exhausted.abcd1234", _EXPLAINER, None
         )
     )
     assert result.success

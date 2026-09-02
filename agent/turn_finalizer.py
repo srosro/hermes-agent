@@ -560,6 +560,7 @@ def finalize_turn(
     #     an empty response, the "(empty)" terminal sentinel, or a
     #     suspiciously short partial fragment with no terminating
     #     punctuation (e.g. "The").  A real short answer keeps its text.
+    _turn_stop_explanation = None
     if not interrupted:
         try:
             if agent._turn_completion_explainer_enabled():
@@ -592,14 +593,17 @@ def finalize_turn(
                         # (replacing the "(empty)" sentinel, or riding behind
                         # a partial fragment), and — when a status channel is
                         # wired — is ALSO emitted as a ``turn_stop.*`` frame.
-                        # Routing is the delivery layer's job: the messaging
-                        # gateway strips the inline prefix for chat surfaces
-                        # (an inline ⚠️ warning in a group chat reads as the
+                        # Routing is the delivery layer's job: the result's
+                        # ``turn_stop_explanation`` field carries the exact
+                        # value so the messaging gateway removes it — by
+                        # value, never by wording — for chat surfaces (an
+                        # inline ⚠️ warning in a group chat reads as the
                         # agent talking and cascades agent-to-agent,
-                        # plow-pbc/agent-mgr#107) and their adapters gate the
-                        # frame; raw-text surfaces (CLI/TUI/API) keep the
-                        # inline text — #34452's "never silent" holds
-                        # everywhere with no per-surface branching here.
+                        # plow-pbc/agent-mgr#107); raw-text surfaces
+                        # (CLI/TUI/API) keep the inline text — #34452's
+                        # "never silent" holds everywhere with no
+                        # per-surface branching here.
+                        _turn_stop_explanation = _explanation
                         # Event key: ``turn_stop.<reason>.<nonce>`` — the
                         # parenthetical suffix is stripped so adapters route
                         # on the class; the nonce makes edit-in-place
@@ -732,6 +736,7 @@ def finalize_turn(
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
+        "turn_stop_explanation": _turn_stop_explanation,
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,

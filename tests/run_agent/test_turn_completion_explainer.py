@@ -454,10 +454,9 @@ def _attach_status_recorder(agent) -> list:
 
 
 def test_gateway_empty_exhausted_emits_turn_stop_status_and_keeps_inline():
-    """On a gateway surface an exhausted-empty turn must emit exactly one
-    ``turn_stop.empty_response_exhausted`` status frame carrying the
-    explanation, and final_response must stay empty (no '(empty)' sentinel,
-    no inline warning for the chat)."""
+    """An exhausted-empty turn emits exactly one ``turn_stop.*`` status frame
+    carrying the explanation AND keeps it inline (the delivery boundary, not
+    the producer, decides which surfaces see the prose)."""
     agent = _make_agent(max_iterations=10)
     events = _attach_status_recorder(agent)
     agent.client.chat.completions.create.side_effect = [
@@ -478,14 +477,16 @@ def test_gateway_empty_exhausted_emits_turn_stop_status_and_keeps_inline():
     assert re.fullmatch(r"turn_stop\.empty_response_exhausted\.[0-9a-f]{8}", event_type)
     assert "No reply:" in message
     # Producer keeps the inline explanation on every surface; the messaging
-    # gateway's sanitize boundary is what strips it for chat platforms.
+    # gateway's sanitize boundary removes exactly this value for chat
+    # platforms, so the result reports it.
     assert "No reply:" in result["final_response"]
+    assert result["turn_stop_explanation"] == result["final_response"]
 
 
 def test_gateway_partial_fragment_keeps_fragment_and_appends_reason():
-    """Partial-stream recovery on a gateway surface: the recovered fragment
-    remains the final_response verbatim; only the explanation moves to the
-    status channel."""
+    """Partial-stream recovery: the recovered fragment keeps its text with the
+    explanation appended inline, and the explanation also rides the status
+    channel; result reports the exact explanation for the delivery boundary."""
     agent = _make_agent(max_iterations=10)
     events = _attach_status_recorder(agent)
     empty_stub = _mock_response(content=None, finish_reason="stop")

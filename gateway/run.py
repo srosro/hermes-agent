@@ -986,7 +986,9 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+def _sanitize_gateway_final_response(
+    platform: Any, text: str, turn_stop_explanation: Optional[str] = None
+) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
     Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
@@ -1020,22 +1022,21 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return ""
 
     # Turn-stop explainers are diagnostics, not assistant prose. The finalizer
-    # keeps them inline for raw-text surfaces (passthrough above) and also
-    # emits a ``turn_stop.*`` status frame; chat surfaces get only the frame —
-    # an inline ⚠️ warning in a group chat reads as the agent talking and
-    # cascades agent-to-agent (plow-pbc/agent-mgr#107). A partial fragment
-    # keeps its recovered text and sheds just the appended explainer.
-    # Lazy import like _sanitize_surrogates below: run_agent's import graph is
-    # heavy, and by the time a final response exists it is already in
-    # sys.modules.
-    from run_agent import TURN_STOP_EXPLAINER_PREFIX
-
-    _stripped_text = str(text).strip()
-    if _stripped_text.startswith(TURN_STOP_EXPLAINER_PREFIX):
-        return ""
-    _explainer_at = _stripped_text.find("\n\n" + TURN_STOP_EXPLAINER_PREFIX)
-    if _explainer_at != -1:
-        text = _stripped_text[:_explainer_at]
+    # keeps them inline for raw-text surfaces (passthrough above), reports the
+    # exact text in the result's ``turn_stop_explanation``, and also emits a
+    # ``turn_stop.*`` status frame; chat surfaces get only the frame — an
+    # inline ⚠️ warning in a group chat reads as the agent talking and
+    # cascades agent-to-agent (plow-pbc/agent-mgr#107). Removal is by exact
+    # value, never by wording, so a genuine model answer that merely quotes a
+    # diagnostic is untouched. A partial fragment keeps its recovered text and
+    # sheds just the appended explainer.
+    if turn_stop_explanation:
+        _t = str(text)
+        if _t.strip() == str(turn_stop_explanation).strip():
+            return ""
+        _suffix = "\n\n" + str(turn_stop_explanation)
+        if _t.endswith(_suffix):
+            text = _t[: -len(_suffix)]
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
@@ -1095,16 +1096,21 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    if str(status_key).startswith("turn_stop."):
+        # A turn-stop explainer is a diagnostic frame, not conversation. Most
+        # status hooks (Telegram/Slack) deliver by posting ordinary chat
+        # messages — the exact inline warning the sanitize boundary just
+        # stripped — so the frame goes only to adapters that declare a
+        # non-conversational diagnostic channel; everyone else drops it.
+        if getattr(adapter, "delivers_diagnostic_status", False):
+            sender = getattr(adapter, "send_or_update_status", None)
+            if callable(sender):
+                return await sender(chat_id, status_key, content, metadata=metadata)
+        logger.debug("dropping turn_stop status for %s (no diagnostic channel)", chat_id)
+        return None
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
-    if str(status_key).startswith("turn_stop."):
-        # A turn-stop explainer is a diagnostic frame for adapters that can
-        # gate or edit it; on a hookless adapter the plain-send fallback would
-        # land it as ordinary chat prose — the exact inline warning the
-        # sanitize boundary just stripped. Drop it instead.
-        logger.debug("dropping turn_stop status for hookless adapter (%s)", chat_id)
-        return None
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
@@ -7050,7 +7056,16 @@ class TurnRunner:
             ):
                 _fr = result.get("final_response")
                 if isinstance(_fr, str) and _fr.strip() and _fr != "(empty)":
-                    _final_for_stream = _fr
+                    # The stream consumer's finish() payload edits the
+                    # streamed bubble to this text — a chat egress, so it
+                    # takes the same platform-sanitized value as the normal
+                    # send path (a raw payload here would re-adopt the
+                    # turn-stop explainer the sanitizer strips).
+                    _fr = _sanitize_gateway_final_response(
+                        ctx.source.platform, _fr, result.get("turn_stop_explanation")
+                    )
+                    if _fr.strip():
+                        _final_for_stream = _fr
             if _final_for_stream is not None:
                 # Duck-type safe: test doubles / older consumers may expose a
                 # zero-arg finish(). The payload is an optimization, not a
@@ -7187,7 +7202,9 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+            final_response = _sanitize_gateway_final_response(
+                ctx.source.platform, final_response, result.get("turn_stop_explanation")
+            )
             if not final_response:
                 final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             return {
@@ -22361,7 +22378,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = _sanitize_gateway_final_response(source.platform, response)
+                response = _sanitize_gateway_final_response(
+                    source.platform, response, agent_result.get("turn_stop_explanation")
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().

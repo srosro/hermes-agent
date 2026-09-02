@@ -333,12 +333,6 @@ _MAX_TOOL_WORKERS = 8
 # pop sites. Mutating without popping leaves the DB silently stale.
 _DB_PERSISTED_MARKER = "_db_persisted"
 
-# Every abnormal-turn explanation from _format_turn_completion_explanation
-# starts with this. The messaging gateway keys on it to keep the explainer
-# out of chat prose (adapters get the turn_stop.* status frame instead);
-# raw-text surfaces (CLI/TUI/API) deliver it inline.
-TURN_STOP_EXPLAINER_PREFIX = "⚠️ No reply: "
-
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
@@ -4186,7 +4180,7 @@ class AIAgent:
         if reason.startswith("text_response"):
             return ""
 
-        prefix = TURN_STOP_EXPLAINER_PREFIX
+        prefix = "⚠️ No reply: "
         if reason == "empty_response_exhausted":
             return (
                 prefix
