@@ -3023,6 +3023,7 @@ os.environ["HERMES_QUIET"] = "1"
 # see gateway/cwd_placeholder.py for the three-case contract (local vs docker
 # mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+from gateway.response_filters import is_intentional_silence_agent_result
 
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
@@ -22379,13 +22380,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # empty-response handling (and the suppression below) applies.
             if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
                 response = ""
-            try:
-                from gateway.response_filters import is_intentional_silence_agent_result
-                _intentional_silence = is_intentional_silence_agent_result(
-                    agent_result, response,
-                )
-            except Exception:
-                _intentional_silence = False
+            _intentional_silence = is_intentional_silence_agent_result(
+                agent_result, response,
+            )
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -22433,10 +22430,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, _e,
                     )
 
-            # Normalization + the turn-stop seam already ran at the single
-            # delivery owner inside _run_agent_inner (before queued/stream
-            # reconciliation); re-normalizing here would resurrect a stripped
-            # explainer as warning prose (#18765's concern is handled there).
+            # The single delivery owner inside _run_agent_inner already
+            # normalized and ran the turn-stop seam (re-normalizing a
+            # finalized result would resurrect a stripped explainer as
+            # warning prose). Results that never passed it — proxy mode,
+            # alternate _run_agent implementations — still get the empty-turn
+            # normalize + general sanitize here as a fallback (#18765).
+            if not _intentional_silence and not agent_result.get("_delivery_finalized"):
+                response = _normalize_empty_agent_response(
+                    agent_result, response, history_len=len(history),
+                )
+                response = _sanitize_gateway_final_response(
+                    source.platform, response
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -31577,25 +31583,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # consumes one authoritative text. The caller must NOT
             # re-normalize: normalizing after the seam would resurrect a
             # stripped explainer as assistant warning prose.
-            # Hidden-reasoning retry exhaustion is exempt: the caller's
-            # blank-and-suppress machinery (#51628) keys on the sentinel
-            # still being in final_response — normalizing or stripping here
-            # would destroy that evidence. Those turns keep their pre-seam
-            # contract (suppressed, no frame).
-            if isinstance(response, dict) and not (
-                _is_gateway_hidden_reasoning_incomplete_turn(response)
-            ):
-                _fr0 = response.get("final_response") or ""
-                try:
-                    from gateway.response_filters import (
-                        is_intentional_silence_agent_result as _is_int_silence,
-                    )
-                    _skip_norm = _is_int_silence(response, _fr0)
-                except Exception:
-                    _skip_norm = False
-                if not _skip_norm:
+            if isinstance(response, dict):
+                response["_delivery_finalized"] = True
+                if _is_gateway_hidden_reasoning_incomplete_turn(response):
+                    # Hidden-reasoning retry exhaustion (#51628): blank the
+                    # sentinel HERE so no queued/reconciliation delivery can
+                    # publish it. The suppression predicate stays true (empty
+                    # final_response qualifies) and the structured
+                    # partial/error metadata is untouched; no frame — these
+                    # turns are suppressed outright, not diagnosed.
+                    response["final_response"] = ""
+                else:
+                    # Normalization preserves non-empty intentional-silence
+                    # markers by construction (it only synthesizes on empty),
+                    # and downstream filters own their suppression — no gate
+                    # needed here.
                     _fr0 = _normalize_empty_agent_response(
-                        response, _fr0, history_len=len(history),
+                        response,
+                        response.get("final_response") or "",
+                        history_len=len(history),
                     )
                     _fr0 = await _deliver_and_strip_turn_stop(
                         adapter, source.platform, source.chat_id, response, _fr0
@@ -31740,6 +31746,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
+                    if isinstance(response, dict):
+                        return response
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")
@@ -31775,13 +31783,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Apply the same predicate as the normal completed-turn path.
                     # This direct queued-send branch predates intentional-silence
                     # filtering, so without this check it leaks the literal marker.
-                    try:
-                        from gateway.response_filters import is_intentional_silence_agent_result
-                        _intentional_silence = is_intentional_silence_agent_result(
-                            _delivery_result, first_response,
-                        )
-                    except Exception:
-                        _intentional_silence = False
+                    _intentional_silence = is_intentional_silence_agent_result(
+                        _delivery_result, first_response,
+                    )
                     if _intentional_silence:
                         logger.info(
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
@@ -31857,7 +31861,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",
                         )
-                        return result
+                        return response if isinstance(response, dict) else result
                     # Resolve the follow-up's session key BEFORE preparing the
                     # inbound text: _prepare_inbound_message_text buffers native
                     # image paths under the key it is given, and the recursive
@@ -31878,7 +31882,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=next_session_key,
                     )
                     if next_message is None:
-                        return result
+                        return response if isinstance(response, dict) else result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
