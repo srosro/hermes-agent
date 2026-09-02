@@ -22430,19 +22430,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, _e,
                     )
 
-            # The single delivery owner inside _run_agent_inner already
-            # normalized and ran the turn-stop seam (re-normalizing a
-            # finalized result would resurrect a stripped explainer as
-            # warning prose). Results that never passed it — proxy mode,
-            # alternate _run_agent implementations — still get the empty-turn
-            # normalize + general sanitize here as a fallback (#18765).
-            if not _intentional_silence and not agent_result.get("_delivery_finalized"):
-                response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
-                )
-                response = _sanitize_gateway_final_response(
-                    source.platform, response
-                )
+            # Delivery text is finalized before this point: the single owner
+            # inside _run_agent_inner (local turns) or the proxy branch's
+            # normalize+sanitize (proxied turns). Re-normalizing here would
+            # resurrect a stripped explainer as warning prose (#18765 lives
+            # at those owners now).
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -30364,7 +30356,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
+            _proxy_result = await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
                 history=history,
@@ -30374,6 +30366,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=event_message_id,
             )
+            # The single delivery owner lives in the local path; proxied
+            # results get empty-turn normalization and the general sanitize
+            # here instead. Turn-stop frames over the proxy transport are
+            # tracked separately (plow-pbc/agent-mgr#126).
+            if isinstance(_proxy_result, dict):
+                _pfr = _normalize_empty_agent_response(
+                    _proxy_result,
+                    _proxy_result.get("final_response") or "",
+                    history_len=len(history or []),
+                )
+                _proxy_result["final_response"] = _sanitize_gateway_final_response(
+                    source.platform, _pfr
+                )
+            return _proxy_result
 
         from run_agent import AIAgent
         import queue
@@ -31592,7 +31598,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # partial/error metadata is untouched; no frame — these
                     # turns are suppressed outright, not diagnosed.
                     response["final_response"] = ""
-                    response["_delivery_finalized"] = True
                 else:
                     # Normalization preserves non-empty intentional-silence
                     # markers by construction (it only synthesizes on empty),
@@ -31607,9 +31612,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter, source.platform, source.chat_id, response, _fr0
                     )
                     response["final_response"] = _fr0
-                    # Flag only after the seam succeeded: a raising seam must
-                    # leave the caller's fallback normalize/sanitize armed.
-                    response["_delivery_finalized"] = True
 
             # Finalize the streaming-TTS consumer (#60671).
             #
