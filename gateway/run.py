@@ -22433,18 +22433,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, _e,
                     )
 
-            # Normalize empty responses: surface errors, partial failures, and
-            # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
-                response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
-                )
-                # The delivery seam already ran inside _run_agent_inner,
-                # before reconciliation; only the general sanitize applies to
-                # any text normalization synthesized above.
-                response = _sanitize_gateway_final_response(
-                    source.platform, response
-                )
+            # Normalization + the turn-stop seam already ran at the single
+            # delivery owner inside _run_agent_inner (before queued/stream
+            # reconciliation); re-normalizing here would resurrect a stripped
+            # explainer as warning prose (#18765's concern is handled there).
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -31578,6 +31570,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             result = result_holder[0]
             adapter = self._adapter_for_source(source)
 
+            # SINGLE DELIVERY OWNER: normalize and run the turn-stop seam
+            # here — before the queued branch, every early return, and all
+            # stream reconciliation — so each downstream delivery (queued
+            # first-response, reconciliation edits, the caller's final send)
+            # consumes one authoritative text. The caller must NOT
+            # re-normalize: normalizing after the seam would resurrect a
+            # stripped explainer as assistant warning prose.
+            if isinstance(response, dict):
+                _fr0 = response.get("final_response") or ""
+                try:
+                    from gateway.response_filters import (
+                        is_intentional_silence_agent_result as _is_int_silence,
+                    )
+                    _skip_norm = _is_int_silence(response, _fr0)
+                except Exception:
+                    _skip_norm = False
+                if not _skip_norm:
+                    _fr0 = _normalize_empty_agent_response(
+                        response, _fr0, history_len=len(history),
+                    )
+                    _fr0 = await _deliver_and_strip_turn_stop(
+                        adapter, source.platform, source.chat_id, response, _fr0
+                    )
+                    response["final_response"] = _fr0
+
             # Finalize the streaming-TTS consumer (#60671).
             #
             # finish() is called from the outer event-loop thread (not the
@@ -32008,20 +32025,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # tool call, setting already_sent=True, but that text is NOT the
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
-        # The turn-stop delivery seam runs FIRST — before queued/stream
-        # reconciliation — so every downstream compare, edit, and send
-        # consumes its authoritative text: frame posted on the diagnostic
-        # channel, inline stripped only on confirmed delivery, general
-        # sanitize always.
-        if isinstance(response, dict):
-            response["final_response"] = await _deliver_and_strip_turn_stop(
-                self._adapter_for_source(source),
-                source.platform,
-                source.chat_id,
-                response,
-                response.get("final_response") or "",
-            )
-
         _sc = stream_consumer_holder[0]
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
