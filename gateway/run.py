@@ -1092,9 +1092,9 @@ def render_notice_line(notice) -> str:
 async def _deliver_turn_stop_frame(adapter, chat_id, result, explanation):
     """Post the turn-stop diagnostic on the adapter's diagnostic channel.
 
-    The single delivery seam: callers invoke this only after
-    ``_turn_stop_explanation_for_delivery`` returned the explanation (so the
-    inline copy was stripped). Key: ``turn_stop.<reason>.<nonce>`` — the
+    The single delivery seam, invoked by ``_deliver_and_strip_turn_stop``,
+    which strips the inline copy only after this returns a successful
+    ``SendResult``. Key: ``turn_stop.<reason>.<nonce>`` — the
     parenthetical suffix is stripped so adapters route on the class, and the
     per-turn nonce makes edit-in-place status caches post a fresh bubble per
     turn. Best-effort by design: the except covers a missing/non-callable
