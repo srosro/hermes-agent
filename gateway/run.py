@@ -7098,21 +7098,19 @@ class TurnRunner:
                 and result.get("completed") is not False
             ):
                 _fr = result.get("final_response")
-                if isinstance(_fr, str) and _fr.strip() and _fr != "(empty)":
-                    # The stream consumer's finish() payload edits the
-                    # streamed bubble to this text — a chat egress, so it
-                    # takes the same platform-sanitized value as the normal
-                    # send path (a raw payload here would re-adopt the
-                    # turn-stop explainer the sanitizer strips).
-                    _fr = _sanitize_gateway_final_response(
-                        ctx.source.platform,
-                        _fr,
-                        _turn_stop_explanation_for_delivery(
-                            self._runner._adapter_for_source(ctx.source), result
-                        ),
-                    )
-                    if _fr.strip():
-                        _final_for_stream = _fr
+                # A turn-stop-bearing result is never adopted as the stream
+                # payload: its final text is decided later by the delivery
+                # seam (_deliver_and_strip_turn_stop), and a provisional
+                # stream edit here would race that decision — either leaking
+                # the explainer into chat or going silent if frame delivery
+                # fails.
+                if (
+                    isinstance(_fr, str)
+                    and _fr.strip()
+                    and _fr != "(empty)"
+                    and not result.get("turn_stop_explanation")
+                ):
+                    _final_for_stream = _fr
             if _final_for_stream is not None:
                 # Duck-type safe: test doubles / older consumers may expose a
                 # zero-arg finish(). The payload is an optimization, not a
@@ -22440,6 +22438,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result,
                     response,
                 )
+                # Downstream reconciliation (stale-stream check, transformed
+                # edit_message) reads final_response from the result record —
+                # hand it the seam's authoritative text.
+                agent_result["final_response"] = response
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -32120,16 +32122,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            # Same platform-sanitized value as every chat
-                            # egress: a raw payload here would re-adopt the
-                            # turn-stop explainer the sanitizer strips.
-                            content=_sanitize_gateway_final_response(
-                                source.platform,
-                                response["final_response"],
-                                _turn_stop_explanation_for_delivery(
-                                    _sc.adapter, response
-                                ),
-                            ),
+                            # final_response already carries the delivery
+                            # seam's authoritative text (written back after
+                            # _deliver_and_strip_turn_stop).
+                            content=response["final_response"],
                             finalize=True,
                         )
                         response["already_sent"] = True

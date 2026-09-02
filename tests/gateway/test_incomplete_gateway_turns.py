@@ -251,14 +251,19 @@ def test_deliver_turn_stop_frame_failures_never_propagate():
 
 
 @pytest.mark.parametrize(
-    ("delivery_ok", "expect_stripped"),
-    [(True, True), (False, False)],
-    ids=["confirmed-delivery-strips", "failed-delivery-keeps-inline"],
+    ("explanation", "delivery_ok", "text", "expected"),
+    [
+        (_EXPLAINER, True, _EXPLAINER, ""),
+        (_EXPLAINER, False, _EXPLAINER, _EXPLAINER),
+        (None, True, "Dinner is at 7.", "Dinner is at 7."),
+    ],
+    ids=["confirmed-delivery-strips", "failed-delivery-keeps-inline", "normal-response-sanitized"],
 )
-def test_deliver_and_strip_contract(delivery_ok, expect_stripped):
+def test_deliver_and_strip_contract(explanation, delivery_ok, text, expected):
     """The one delivery contract for every egress (main path and /bg alike):
     sanitize always runs; the inline explainer is stripped only after the
-    frame is CONFIRMED delivered — a failed delivery keeps it (never silent)."""
+    frame is CONFIRMED delivered — a failed delivery keeps it (never silent),
+    and a normal response passes through the ordinary sanitize untouched."""
 
     class _Diag:
         delivers_diagnostic_status = True
@@ -268,25 +273,11 @@ def test_deliver_and_strip_contract(delivery_ok, expect_stripped):
 
     result = {
         "turn_exit_reason": "empty_response_exhausted",
-        "turn_stop_explanation": _EXPLAINER,
+        "turn_stop_explanation": explanation,
     }
     out = asyncio.run(
         gateway_run._deliver_and_strip_turn_stop(
-            _Diag(), Platform.SLACK, "chat-1", result, _EXPLAINER
+            _Diag(), Platform.SLACK, "chat-1", result, text
         )
     )
-    assert out == ("" if expect_stripped else _EXPLAINER)
-
-
-def test_deliver_and_strip_sanitizes_even_without_turn_stop():
-    """A normal response still gets the ordinary sanitize pass (the /bg path
-    previously skipped it when no frame was delivered)."""
-    hookless = CaptureSlackAdapter()
-    result = {"turn_exit_reason": "text_response(finish_reason=stop)", "turn_stop_explanation": None}
-    text = "Dinner is at 7."
-    out = asyncio.run(
-        gateway_run._deliver_and_strip_turn_stop(
-            hookless, Platform.SLACK, "chat-1", result, text
-        )
-    )
-    assert out == text
+    assert out == expected
