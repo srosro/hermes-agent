@@ -986,7 +986,9 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+def _sanitize_gateway_final_response(
+    platform: Any, text: str, turn_stop_explanation: Optional[str] = None
+) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
     Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
@@ -1018,6 +1020,23 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     # this sentinel; chat surfaces should too (#7921).
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
+
+    # Turn-stop explainers are diagnostics, not assistant prose. The finalizer
+    # keeps them inline for raw-text surfaces (passthrough above), reports the
+    # exact text in the result's ``turn_stop_explanation``, and also emits a
+    # ``turn_stop.*`` status frame; chat surfaces get only the frame — an
+    # inline ⚠️ warning in a group chat reads as the agent talking and
+    # cascades agent-to-agent (plow-pbc/agent-mgr#107). Removal is by exact
+    # value, never by wording, so a genuine model answer that merely quotes a
+    # diagnostic is untouched. A partial fragment keeps its recovered text and
+    # sheds just the appended explainer.
+    if turn_stop_explanation:
+        _t = str(text)
+        if _t.strip() == str(turn_stop_explanation).strip():
+            return ""
+        _suffix = "\n\n" + str(turn_stop_explanation)
+        if _t.endswith(_suffix):
+            text = _t[: -len(_suffix)]
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
@@ -1068,6 +1087,61 @@ def render_notice_line(notice) -> str:
     degrades to "" rather than raising on the agent's callback path.
     """
     return str(getattr(notice, "text", "") or "").strip()
+
+
+async def _deliver_turn_stop_frame(adapter, chat_id, result, explanation):
+    """Post the turn-stop diagnostic on the adapter's diagnostic channel.
+
+    The single delivery seam, invoked by ``_deliver_and_strip_turn_stop``,
+    which strips the inline copy only after this returns a successful
+    ``SendResult``. Key: ``turn_stop.<reason>.<nonce>`` — the
+    parenthetical suffix is stripped so adapters route on the class, and the
+    per-turn nonce makes edit-in-place status caches post a fresh bubble per
+    turn. Best-effort by design: the except covers a missing/non-callable
+    ``send_or_update_status`` as much as delivery failure — either way only a
+    diagnostic is lost.
+    """
+    import uuid as _uuid
+
+    reason = str(result.get("turn_exit_reason") or "unknown").split("(", 1)[0]
+    key = f"turn_stop.{reason}.{_uuid.uuid4().hex[:8]}"
+    try:
+        return await adapter.send_or_update_status(chat_id, key, explanation)
+    except Exception:
+        logger.debug("turn_stop frame delivery failed for %s", chat_id, exc_info=True)
+        return None
+
+
+async def _deliver_and_strip_turn_stop(adapter, platform, chat_id, result, text):
+    """The whole turn-stop delivery contract in one place, for every egress.
+
+    Sanitize ALWAYS runs (secret redaction, provider-error rewrites); the
+    turn-stop explanation is stripped from the prose only after the frame is
+    CONFIRMED delivered on the adapter's diagnostic channel — a failed or
+    unconfirmed delivery keeps the inline copy, so an abnormal end is never
+    silent (#34452).
+    """
+    explanation = _turn_stop_explanation_for_delivery(adapter, result)
+    delivered = False
+    if explanation:
+        res = await _deliver_turn_stop_frame(adapter, chat_id, result, explanation)
+        delivered = bool(getattr(res, "success", False))
+    return _sanitize_gateway_final_response(
+        platform, text, explanation if delivered else None
+    )
+
+
+def _turn_stop_explanation_for_delivery(adapter, result) -> Optional[str]:
+    """The explanation to strip from this platform's chat prose.
+
+    Only when the adapter declares a non-conversational diagnostic channel
+    (``delivers_diagnostic_status``) does the ``turn_stop.*`` frame reach it —
+    stripping inline is safe. Everywhere else, inline is the platform's only
+    delivery, so it must survive: an abnormal end is never silent (#34452).
+    """
+    if getattr(adapter, "delivers_diagnostic_status", False):
+        return (result or {}).get("turn_stop_explanation")
+    return None
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
@@ -2949,6 +3023,7 @@ os.environ["HERMES_QUIET"] = "1"
 # see gateway/cwd_placeholder.py for the three-case contract (local vs docker
 # mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+from gateway.response_filters import is_intentional_silence_agent_result
 
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
@@ -7024,8 +7099,27 @@ class TurnRunner:
                 and result.get("completed") is not False
             ):
                 _fr = result.get("final_response")
-                if isinstance(_fr, str) and _fr.strip() and _fr != "(empty)":
-                    _final_for_stream = _fr
+                # A turn-stop-bearing result is never adopted as the stream
+                # payload: its final text is decided later by the delivery
+                # seam (_deliver_and_strip_turn_stop), and a provisional
+                # stream edit here would race that decision — either leaking
+                # the explainer into chat or going silent if frame delivery
+                # fails.
+                if (
+                    isinstance(_fr, str)
+                    and _fr.strip()
+                    and _fr != "(empty)"
+                    and not result.get("turn_stop_explanation")
+                ):
+                    # General sanitize only (no turn-stop arg — the seam owns
+                    # stripping): this payload edits a chat bubble, so secret
+                    # redaction, surrogate scrubbing (#55143/#55309), and
+                    # provider-error rewriting must still run here.
+                    _fr = _sanitize_gateway_final_response(
+                        ctx.source.platform, _fr
+                    )
+                    if _fr.strip():
+                        _final_for_stream = _fr
             if _final_for_stream is not None:
                 # Duck-type safe: test doubles / older consumers may expose a
                 # zero-arg finish(). The payload is an optimization, not a
@@ -7162,11 +7256,19 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+            # No turn-stop strip here: this dict flows to the main delivery
+            # seam, which delivers the frame first and strips only on
+            # confirmed delivery. Stripping optimistically here could leave
+            # the turn silent if that delivery later fails.
+            final_response = _sanitize_gateway_final_response(
+                ctx.source.platform, final_response
+            )
             if not final_response:
                 final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             return {
                 "final_response": final_response,
+                "turn_stop_explanation": result.get("turn_stop_explanation"),
+                "turn_exit_reason": result.get("turn_exit_reason"),
                 "messages": result.get("messages", []),
                 "api_calls": result.get("api_calls", 0),
                 "failed": result.get("failed", False),
@@ -7243,6 +7345,8 @@ class TurnRunner:
 
         return {
             "final_response": final_response,
+            "turn_stop_explanation": result.get("turn_stop_explanation"),
+            "turn_exit_reason": result.get("turn_exit_reason"),
             "last_reasoning": result.get("last_reasoning"),
             "messages": ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else [],
             "api_calls": ctx.result_holder[0].get("api_calls", 0) if ctx.result_holder[0] else 0,
@@ -22276,13 +22380,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # empty-response handling (and the suppression below) applies.
             if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
                 response = ""
-            try:
-                from gateway.response_filters import is_intentional_silence_agent_result
-                _intentional_silence = is_intentional_silence_agent_result(
-                    agent_result, response,
-                )
-            except Exception:
-                _intentional_silence = False
+            _intentional_silence = is_intentional_silence_agent_result(
+                agent_result, response,
+            )
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -22330,13 +22430,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, _e,
                     )
 
-            # Normalize empty responses: surface errors, partial failures, and
-            # the case where agent did work but returned no text. Fix for #18765.
-            if not _intentional_silence:
-                response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
-                )
-                response = _sanitize_gateway_final_response(source.platform, response)
+            # Delivery text is finalized before this point: the single owner
+            # inside _run_agent_inner (local turns) or the proxy branch's
+            # normalize+sanitize (proxied turns). Re-normalizing here would
+            # resurrect a stripped explainer as warning prose (#18765 lives
+            # at those owners now).
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -24602,6 +24700,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+
+            # Same turn-stop seam (and the same unconditional sanitize) as
+            # the main path.
+            if result:
+                response = await _deliver_and_strip_turn_stop(
+                    adapter, source.platform, source.chat_id, result, response
+                )
 
             # Background tasks start a fresh conversation (no prior history),
             # so history_offset=0: every message in the run belongs to this
@@ -30025,7 +30130,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         return {
-            "final_response": full_response or "(No response from remote agent)",
+            # Raw text; the proxy owner's normalize in _run_agent exclusively
+            # handles the empty case (a placeholder here would pre-empt it).
+            "final_response": full_response,
             "messages": [
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": full_response},
@@ -30251,7 +30358,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
+            _proxy_result = await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
                 history=history,
@@ -30261,6 +30368,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=event_message_id,
             )
+            # The single delivery owner lives in the local path; proxied
+            # results get empty-turn normalization and the general sanitize
+            # here instead. Turn-stop frames over the proxy transport are
+            # tracked separately (plow-pbc/agent-mgr#126).
+            if isinstance(_proxy_result, dict):
+                _pfr = _normalize_empty_agent_response(
+                    _proxy_result,
+                    _proxy_result.get("final_response") or "",
+                    history_len=len(history or []),
+                )
+                _proxy_result["final_response"] = _sanitize_gateway_final_response(
+                    source.platform, _pfr
+                )
+            return _proxy_result
 
         from run_agent import AIAgent
         import queue
@@ -31463,6 +31584,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             result = result_holder[0]
             adapter = self._adapter_for_source(source)
 
+            # SINGLE DELIVERY OWNER: normalize and run the turn-stop seam
+            # here — before the queued branch, every early return, and all
+            # stream reconciliation — so each downstream delivery (queued
+            # first-response, reconciliation edits, the caller's final send)
+            # consumes one authoritative text. The caller must NOT
+            # re-normalize: normalizing after the seam would resurrect a
+            # stripped explainer as assistant warning prose.
+            if isinstance(response, dict):
+                if _is_gateway_hidden_reasoning_incomplete_turn(response):
+                    # Hidden-reasoning retry exhaustion (#51628): blank the
+                    # sentinel HERE so no queued/reconciliation delivery can
+                    # publish it. The suppression predicate stays true (empty
+                    # final_response qualifies) and the structured
+                    # partial/error metadata is untouched; no frame — these
+                    # turns are suppressed outright, not diagnosed.
+                    response["final_response"] = ""
+                else:
+                    # Normalization preserves non-empty intentional-silence
+                    # markers by construction (it only synthesizes on empty),
+                    # and downstream filters own their suppression — no gate
+                    # needed here.
+                    _fr0 = _normalize_empty_agent_response(
+                        response,
+                        response.get("final_response") or "",
+                        history_len=len(history),
+                    )
+                    if _run_still_current():
+                        _fr0 = await _deliver_and_strip_turn_stop(
+                            adapter, source.platform, source.chat_id, response, _fr0
+                        )
+                    # else: a /stop, /new, or replacement run superseded this
+                    # result — no frame; the stale inline text rides to the
+                    # caller's existing generation discard untouched.
+                    response["final_response"] = _fr0
+
             # Finalize the streaming-TTS consumer (#60671).
             #
             # finish() is called from the outer event-loop thread (not the
@@ -31494,7 +31650,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending_event = None
             pending = None
-            if result and adapter and session_key:
+            if result and adapter and session_key and not _run_still_current():
+                # Superseded run: do not consume the pending slot — the
+                # session-command drain (_drain_pending_after_session_command)
+                # exclusively owns post-invalidation events, and a dequeue
+                # here would leave it nothing to retrieve.
+                logger.info(
+                    "Run superseded for session %s; leaving pending events for the session-command drain.",
+                    session_key or "?",
+                )
+            elif result and adapter and session_key:
                 pending_event = _dequeue_pending_event(adapter, session_key)
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
@@ -31601,6 +31766,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
+                    if isinstance(response, dict):
+                        return response
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")
@@ -31636,14 +31803,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Apply the same predicate as the normal completed-turn path.
                     # This direct queued-send branch predates intentional-silence
                     # filtering, so without this check it leaks the literal marker.
-                    try:
-                        from gateway.response_filters import is_intentional_silence_agent_result
-                        _intentional_silence = is_intentional_silence_agent_result(
-                            _delivery_result, first_response,
+                    _intentional_silence = is_intentional_silence_agent_result(
+                        _delivery_result, first_response,
+                    )
+                    if not _run_still_current():
+                        # Mid-flight supersession: the slot was consumed while
+                        # this run was still current, but a /stop, /new, or
+                        # replacement landed during the awaits since. Per the
+                        # handoff contract, drop — no publish, no recursion
+                        # under the obsolete generation.
+                        logger.info(
+                            "Queued follow-up for session %s: run superseded mid-flight; dropping stale delivery and follow-up.",
+                            session_key or "?",
                         )
-                    except Exception:
-                        _intentional_silence = False
-                    if _intentional_silence:
+                        return response if isinstance(response, dict) else result
+                    elif _intentional_silence:
                         logger.info(
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
@@ -31718,7 +31892,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",
                         )
-                        return result
+                        return response if isinstance(response, dict) else result
                     # Resolve the follow-up's session key BEFORE preparing the
                     # inbound text: _prepare_inbound_message_text buffers native
                     # image paths under the key it is given, and the recursive
@@ -31739,7 +31913,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=next_session_key,
                     )
                     if next_message is None:
-                        return result
+                        return response if isinstance(response, dict) else result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
@@ -31785,6 +31959,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # recursive call runs under so the snapshot matches exactly
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
+
+                # Last-responsible-moment rejection: every await since the
+                # queued-branch check (delivery, callbacks, message prep,
+                # cache refresh) is a supersession window, and this is the
+                # final gate before the recursion schedules model/tool work
+                # under the generation it carries. Unconditional on purpose:
+                # ordinary busy interruption queues and signals WITHOUT
+                # bumping the generation (only /stop and /new invalidate),
+                # so an interrupted continuation passes this check and is
+                # serviced — only reset-stale work is rejected.
+                if not _run_still_current():
+                    logger.info(
+                        "Queued follow-up for session %s: run superseded before recursion; dropping.",
+                        session_key or "?",
+                    )
+                    return response if isinstance(response, dict) else result
 
                 followup_result = await self._run_agent(
                     message=next_message,
@@ -32007,17 +32197,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
+                        _transform_res = await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
+                            # The seam above already produced the
+                            # authoritative (sanitized, stripped-on-delivery)
+                            # text.
                             content=response["final_response"],
                             finalize=True,
                         )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
+                        if getattr(_transform_res, "success", True):
+                            response["already_sent"] = True
+                            logger.info(
+                                "Edited streamed message %s for session %s to include plugin-transformed content.",
+                                _sc_msg_id, session_key or "?",
+                            )
+                        else:
+                            logger.warning(
+                                "Transformed-edit failed for session %s (%s); sending via normal final send.",
+                                session_key or "?",
+                                getattr(_transform_res, "error", None),
+                            )
                     except Exception as _edit_err:
                         logger.warning(
                             "Failed to edit streamed message for session %s: %s",

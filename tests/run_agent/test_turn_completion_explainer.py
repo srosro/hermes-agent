@@ -77,10 +77,6 @@ def test_explanation_quiet_for_empty_reason():
     assert AIAgent._format_turn_completion_explanation("guardrail_halt") == ""
 
 
-
-
-
-
 def test_explanation_for_max_iterations_reached_prefix_match():
     """``max_iterations_reached(...)`` carries a parenthetical suffix."""
     out = AIAgent._format_turn_completion_explanation(
@@ -438,3 +434,74 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
+# --------------------------------------------------------------------------
+# 4. Gateway surfaces: the explanation rides the status channel, not
+#    final_response. The producer has ONE representation: the inline text
+#    plus its exact copy in result["turn_stop_explanation"]. The gateway is
+#    the sole delivery seam (strip-by-value + diagnostic-channel frame),
+#    pinned by tests/gateway/test_incomplete_gateway_turns.py.
+# --------------------------------------------------------------------------
+def _attach_status_recorder(agent) -> list:
+    events = []
+    agent.status_callback = lambda event_type, message: events.append(
+        (event_type, message)
+    )
+    return events
+
+
+def test_empty_exhausted_reports_field_and_keeps_inline():
+    """An exhausted-empty turn emits exactly one ``turn_stop.*`` status frame
+    carrying the explanation AND keeps it inline (the delivery boundary, not
+    the producer, decides which surfaces see the prose)."""
+    agent = _make_agent(max_iterations=10)
+    events = _attach_status_recorder(agent)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="stop") for _ in range(8)
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "empty_response_exhausted"
+    # One representation: inline text everywhere, exact copy in the field for
+    # the gateway's delivery seam. No status frames from the producer.
+    assert "No reply:" in result["final_response"]
+    assert result["turn_stop_explanation"] == result["final_response"]
+    assert [e for e in events if e[0].startswith("turn_stop.")] == []
+
+
+def test_partial_fragment_keeps_fragment_and_appends_reason():
+    """Partial-stream recovery: the recovered fragment keeps its text with the
+    explanation appended inline, and the explanation also rides the status
+    channel; result reports the exact explanation for the delivery boundary."""
+    agent = _make_agent(max_iterations=10)
+    events = _attach_status_recorder(agent)
+    empty_stub = _mock_response(content=None, finish_reason="stop")
+    recovered = (
+        "I inspected the running gateway and found that the current turn "
+        "stopped after the provider stream timed out."
+    )
+
+    def _fake_api_call(_api_kwargs):
+        agent._current_streamed_assistant_text = recovered
+        return empty_stub
+
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "partial_stream_recovery"
+    assert result["final_response"].startswith(recovered)
+    # Explainer rides behind the fragment; the field reports its exact text so
+    # the gateway can shed precisely that suffix for chat platforms.
+    assert "No reply:" in result["final_response"]
+    assert result["final_response"].endswith("\n\n" + result["turn_stop_explanation"])
+    assert [e for e in events if e[0].startswith("turn_stop.")] == []

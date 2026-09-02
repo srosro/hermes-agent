@@ -551,6 +551,33 @@ def finalize_turn(
     # the agent stopped (#34452).  Surface a single user-visible
     # explanation derived from ``_turn_exit_reason``, mirroring the
     # file-mutation verifier footer pattern above.
+
+    _response_transformed = False
+    _pre_transform_response = None
+
+    # Plugin hook: transform_llm_output
+    # Fired once per turn after the tool-calling loop completes.
+    # Plugins can transform the LLM's output text before it's returned.
+    # First hook to return a string wins; None/empty return leaves text unchanged.
+    if final_response and not interrupted:
+        try:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _transform_results = _invoke_hook(
+                "transform_llm_output",
+                response_text=final_response,
+                session_id=agent.session_id or "",
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+            for _hook_result in _transform_results:
+                if isinstance(_hook_result, str) and _hook_result:
+                    _pre_transform_response = final_response
+                    final_response = _hook_result
+                    _response_transformed = True
+                    break  # First non-empty string wins
+        except Exception as exc:
+            logger.warning("transform_llm_output hook failed: %s", exc)
+
     #
     # Gate carefully so healthy turns stay quiet:
     #   - ``text_response(...)`` exits never produce an explanation
@@ -559,6 +586,7 @@ def finalize_turn(
     #     an empty response, the "(empty)" terminal sentinel, or a
     #     suspiciously short partial fragment with no terminating
     #     punctuation (e.g. "The").  A real short answer keeps its text.
+    _turn_stop_explanation = None
     if not interrupted:
         try:
             if agent._turn_completion_explainer_enabled():
@@ -587,45 +615,26 @@ def finalize_turn(
                         getattr(agent, "_last_persistence_error_cause", None),
                     )
                     if _explanation:
+                        # Producer only, one representation: the explanation
+                        # always lands inline (replacing the "(empty)"
+                        # sentinel, or riding behind a partial fragment) and
+                        # its exact text is reported in the result's
+                        # ``turn_stop_explanation``. The messaging gateway is
+                        # the sole delivery seam: it removes precisely that
+                        # value for chat surfaces whose adapter declares a
+                        # non-conversational diagnostic channel and posts it
+                        # there instead (an inline ⚠️ warning in a group chat
+                        # reads as the agent talking and cascades
+                        # agent-to-agent, plow-pbc/agent-mgr#107); every
+                        # other surface keeps the inline text — #34452's
+                        # "never silent" holds everywhere.
+                        _turn_stop_explanation = _explanation
                         if _is_empty_terminal:
-                            # Replace the bare "(empty)"/blank sentinel with
-                            # the actionable explanation.
                             final_response = _explanation
                         else:
-                            # Keep the partial fragment, append the reason so
-                            # the user sees both what arrived and why it
-                            # stopped.
-                            final_response = (
-                                _stripped + "\n\n" + _explanation
-                            )
+                            final_response = _stripped + "\n\n" + _explanation
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
-
-    _response_transformed = False
-    _pre_transform_response = None
-
-    # Plugin hook: transform_llm_output
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
-                "transform_llm_output",
-                response_text=final_response,
-                session_id=agent.session_id or "",
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-            for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    _pre_transform_response = final_response
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
-        except Exception as exc:
-            logger.warning("transform_llm_output hook failed: %s", exc)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -708,6 +717,7 @@ def finalize_turn(
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
+        "turn_stop_explanation": _turn_stop_explanation,
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,

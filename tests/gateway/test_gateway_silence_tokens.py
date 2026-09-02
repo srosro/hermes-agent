@@ -121,8 +121,12 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
 @pytest.mark.asyncio
 async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
+    # Empty-turn normalization now happens at the delivery owners (the
+    # single owner in _run_agent_inner for local turns, the proxy branch for
+    # proxied ones); _run_agent therefore returns the already-normalized
+    # warning, and the caller's job is to deliver it unmangled.
     runner._run_agent = AsyncMock(return_value={
-        "final_response": "",
+        "final_response": "I processed your request but no response was generated. Please try again.",
         "messages": [
             {"role": "user", "content": "question"},
             {"role": "assistant", "content": ""},

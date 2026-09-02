@@ -165,6 +165,32 @@ class TestRunAgentProxyDispatch:
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
 
+    @pytest.mark.asyncio
+    async def test_empty_proxy_response_gets_the_empty_turn_warning(self, monkeypatch):
+        """The proxy owner in _run_agent exclusively normalizes empty proxied
+        turns — _run_agent_via_proxy returns raw text, no placeholder."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source()
+
+        runner._run_agent_via_proxy = AsyncMock(return_value={
+            "final_response": "",
+            "messages": [],
+            "api_calls": 1,
+            "tools": [],
+            "failed": False,
+        })
+
+        result = await runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[{"role": "user", "content": "hi"}],
+            source=source,
+            session_id="test-session-123",
+        )
+
+        assert "no response was generated" in result["final_response"]
+
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
