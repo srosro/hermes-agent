@@ -23,7 +23,7 @@ from gateway.config import Platform, platform_binds_port as _platform_binds_port
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore, config_session_scope
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -760,7 +760,6 @@ class GatewayAdapterLifecycleMixin:
     def _publish_primary_adapter(self, platform, adapter) -> None:
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
         self.adapters[platform] = adapter
-        self._register_adapter_session_scope(platform, adapter)
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
@@ -1020,7 +1019,6 @@ class GatewayAdapterLifecycleMixin:
                 self._schedule_secondary_profile_startup_reconnect(profile_name, platform, adapter)
                 continue
             profile_map[platform] = adapter
-            self._register_adapter_session_scope(platform, adapter, profile=profile_name)
             # Restore persisted /voice state for this bot (primary startup and reconnects do too).
             # See #84872.
             self._sync_voice_mode_state_to_adapter(adapter)
@@ -1031,16 +1029,37 @@ class GatewayAdapterLifecycleMixin:
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
         return connected
 
+    def _register_adapter_session_scope(self, adapter, profile: Optional[str] = None) -> None:
+        """Register the adapter's ``config.extra`` isolation flags with the store, keyed (profile,
+        platform), so plugin/out-of-tree platforms with no config.platforms entry key sessions the way
+        the adapter asks. Runs at handler wiring — BEFORE ``connect()``, which is where Telegram polling
+        / webhooks go inbound-reachable. An explicit ``None`` is normalized to the gateway default and
+        written back, so the adapter's own key derivation (batching, thread keys) agrees byte-for-byte.
+        Bare/legacy runners without a real store (test doubles) skip registration."""
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        store = getattr(self, "session_store", None)
+        if not isinstance(extra, dict) or not isinstance(store, SessionStore):
+            return
+        for key, default in zip(
+            ("group_sessions_per_user", "thread_sessions_per_user"), config_session_scope(self.config)
+        ):
+            if extra.get(key) is None:
+                extra[key] = default
+        store.register_platform_session_scope(
+            adapter.platform.value, group_sessions_per_user=extra["group_sessions_per_user"],
+            thread_sessions_per_user=extra["thread_sessions_per_user"], profile=profile)
+
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        busy_text_mode: Optional[str] = None, profile: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
+        self._register_adapter_session_scope(adapter, profile=profile)
         adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
@@ -1073,6 +1092,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
+            profile=profile_name,
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)
@@ -1142,7 +1162,6 @@ class GatewayAdapterLifecycleMixin:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
-                            self._register_adapter_session_scope(platform, adapter, profile=profile_name)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
                             await self._redeliver_failed_obligations_for_platform(

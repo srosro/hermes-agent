@@ -817,44 +817,32 @@ class TestWhatsAppSessionKeyConsistency:
         assert with_store.shared_multi_user_session is True
         assert without_store.shared_multi_user_session is False
 
-    def test_runner_registers_adapter_scope_from_extra(self):
-        """_register_adapter_session_scope reads the adapter's config.extra
-        (treating an explicit None as no-override) and registers under the
-        given profile — the wiring the acceptance points rely on."""
+    def test_runner_registers_adapter_scope_from_extra(self, tmp_path):
+        """_register_adapter_session_scope (handler wiring, pre-connect) reads
+        the adapter's config.extra, normalizes an explicit None to the gateway
+        default AND writes it back so the adapter's own key derivation agrees,
+        and registers under the given profile."""
         from types import SimpleNamespace
 
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(
-            group_sessions_per_user=True, thread_sessions_per_user=True
+            group_sessions_per_user=True, thread_sessions_per_user=True,
+            multiplex_profiles=True,
         )
-        registered = {}
-        runner.session_store = SimpleNamespace(
-            register_platform_session_scope=lambda platform, **kw: registered.update(
-                {platform: kw}
-            )
-        )
-        adapter = SimpleNamespace(
-            config=SimpleNamespace(
-                extra={
-                    "group_sessions_per_user": False,
-                    "thread_sessions_per_user": None,
-                }
-            )
-        )
+        runner.session_store = SessionStore(sessions_dir=tmp_path, config=runner.config)
+        extra = {"group_sessions_per_user": False, "thread_sessions_per_user": None}
+        adapter = SimpleNamespace(platform=Platform.DISCORD, config=SimpleNamespace(extra=extra))
 
-        runner._register_adapter_session_scope(
-            Platform.DISCORD, adapter, profile="eva"
-        )
+        runner._register_adapter_session_scope(adapter, profile="eva")
 
-        assert registered["discord"] == {
-            "group_sessions_per_user": False,
-            # Explicit None falls back to the gateway default (True here),
-            # not bool(None) == False.
-            "thread_sessions_per_user": True,
-            "profile": "eva",
-        }
+        # Explicit None became the gateway default (True), not bool(None) == False.
+        assert extra == {"group_sessions_per_user": False, "thread_sessions_per_user": True}
+        eva = SessionSource(
+            platform=Platform.DISCORD, chat_id="g", chat_type="group", user_id="u", profile="eva"
+        )
+        assert runner.session_store.resolve_session_scope(eva) == (False, True)
 
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""

@@ -898,22 +898,8 @@ class TestSameOriginChatGroupScoping:
             thread_sessions_per_user=False,
         )
         assert runner._same_origin_chat(alice, bob) is True
-
-    def test_runner_key_matches_store_key_under_registered_scope(self, tmp_path):
-        """The runner-side key helper every slash/control consumer uses (/new, overrides,
-        goals, heartbeat) must be byte-identical to the store's routing key when an
-        adapter-registered scope disagrees with the global default — otherwise the
-        control plane and message persistence address two different sessions."""
-        from gateway.session import SessionStore
-
-        runner = _make_runner()
-        runner.config.group_sessions_per_user = True
-        runner.session_store = SessionStore(sessions_dir=tmp_path, config=runner.config)
-        runner.session_store.register_platform_session_scope(
-            "discord", group_sessions_per_user=False, thread_sessions_per_user=False,
-        )
-        alice = self._src("alice")
-
+        # The runner-side key every slash/control consumer uses must be byte-identical
+        # to the store's routing key, else control plane and persistence split.
         store_key = runner.session_store.get_or_create_session(alice).session_key
         assert store_key == "agent:main:discord:group:guild-123"
         assert runner._session_key_for_source(alice) == store_key

@@ -19,7 +19,7 @@ from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
+from gateway.session import SessionSource, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_status import HISTORY_UNREADABLE
 
@@ -443,7 +443,7 @@ class GatewaySessionCommandsMixin:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         try:
-            self._evict_cached_agent(build_session_key(source))
+            self._evict_cached_agent(self._session_key_for_source(source))
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]

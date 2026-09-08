@@ -3838,24 +3838,6 @@ class GatewayRunner(
             return store.resolve_session_scope(source)
         return config_session_scope(getattr(self, "config", None))
 
-    def _register_adapter_session_scope(self, platform, adapter, profile: Optional[str] = None) -> None:
-        """Register an accepted adapter's session scope (its post-``__init__`` ``config.extra``
-        isolation flags, gateway defaults for a missing/None value) with the store, so plugin and
-        out-of-tree platforms with no config.platforms entry key sessions the way the adapter asks.
-        Called only at acceptance points: a created-but-rejected adapter leaves no registration."""
-        extra = getattr(getattr(adapter, "config", None), "extra", None)
-        store = getattr(self, "session_store", None)
-        if store is None or not isinstance(extra, dict):
-            return
-        default_group, default_thread = config_session_scope(self.config)
-        group = extra.get("group_sessions_per_user")
-        thread = extra.get("thread_sessions_per_user")
-        store.register_platform_session_scope(
-            platform.value,
-            group_sessions_per_user=default_group if group is None else group,
-            thread_sessions_per_user=default_thread if thread is None else thread,
-            profile=profile)
-
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
